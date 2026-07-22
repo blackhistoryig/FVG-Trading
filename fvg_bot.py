@@ -1,5 +1,7 @@
 import pandas as pd
 import numpy as np
+import yfinance as yf
+import itertools
 from dataclasses import dataclass
 from typing import List
 
@@ -20,12 +22,12 @@ class FvgMssDisplacementStrategy:
         self,
         account_balance: float = 10000.0,
         risk_per_trade_pct: float = 0.01,  
-        risk_reward_ratio: float = 2.0,    
+        risk_reward_ratio: float = 1.5,    # Updated winning default
         atr_period: int = 14,
-        atr_multiplier: float = 1.5,
+        atr_multiplier: float = 1.0,        # Updated winning default
         vol_period: int = 20,
-        vol_multiplier: float = 1.5,
-        swing_window: int = 2,
+        vol_multiplier: float = 1.0,        # Updated winning default
+        swing_window: int = 2,              # Updated winning default
         mss_lookback_bars: int = 5
     ):
         self.account_balance = account_balance
@@ -116,12 +118,21 @@ class FvgMssDisplacementStrategy:
 
         return signals
 
-print("Strategy loaded successfully!")
+
 class BacktestEngine:
-    def __init__(self, strategy, initial_capital: float = 10000.0, max_order_lifespan_bars: int = 20):
+    def __init__(
+        self, 
+        strategy, 
+        initial_capital: float = 10000.0, 
+        max_order_lifespan_bars: int = 20,
+        fee_pct: float = 0.0005,       # 0.05% commission per trade
+        slippage_pct: float = 0.0002   # 0.02% price slippage per execution
+    ):
         self.strategy = strategy
         self.initial_capital = initial_capital
         self.max_order_lifespan = max_order_lifespan_bars
+        self.fee_pct = fee_pct
+        self.slippage_pct = slippage_pct
 
     def run(self, df: pd.DataFrame) -> dict:
         signals = self.strategy.generate_signals(df)
@@ -140,24 +151,52 @@ class BacktestEngine:
 
             if active_trade is not None:
                 trade = active_trade['signal']
+                trade_pnl = None
+
+                # Check SL/TP triggers
                 if trade.trade_type == 'BUY':
                     if low <= trade.stop_loss:
-                        capital -= trade.risk_usd
-                        closed_trades.append({**trade.__dict__, 'result': 'LOSS'})
-                        active_trade = None
+                        gross_pnl = -trade.risk_usd
+                        trade_result = 'LOSS'
+                        exit_price = trade.stop_loss
                     elif high >= trade.take_profit:
-                        capital += (trade.risk_usd * self.strategy.rr_ratio)
-                        closed_trades.append({**trade.__dict__, 'result': 'WIN'})
-                        active_trade = None
+                        gross_pnl = trade.risk_usd * self.strategy.rr_ratio
+                        trade_result = 'WIN'
+                        exit_price = trade.take_profit
+                    else:
+                        gross_pnl = None
+
                 elif trade.trade_type == 'SELL':
                     if high >= trade.stop_loss:
-                        capital -= trade.risk_usd
-                        closed_trades.append({**trade.__dict__, 'result': 'LOSS'})
-                        active_trade = None
+                        gross_pnl = -trade.risk_usd
+                        trade_result = 'LOSS'
+                        exit_price = trade.stop_loss
                     elif low <= trade.take_profit:
-                        capital += (trade.risk_usd * self.strategy.rr_ratio)
-                        closed_trades.append({**trade.__dict__, 'result': 'WIN'})
-                        active_trade = None
+                        gross_pnl = trade.risk_usd * self.strategy.rr_ratio
+                        trade_result = 'WIN'
+                        exit_price = trade.take_profit
+                    else:
+                        gross_pnl = None
+
+                if gross_pnl is not None:
+                    # Calculate trading fees & slippage costs
+                    entry_notional = trade.position_size_units * trade.entry_price
+                    exit_notional = trade.position_size_units * exit_price
+                    
+                    entry_fee = entry_notional * self.fee_pct
+                    exit_fee = exit_notional * self.fee_pct
+                    slippage_cost = (entry_notional + exit_notional) * self.slippage_pct
+                    
+                    net_pnl = gross_pnl - (entry_fee + exit_fee + slippage_cost)
+                    capital += net_pnl
+                    
+                    closed_trades.append({
+                        **trade.__dict__, 
+                        'result': trade_result, 
+                        'net_pnl': round(net_pnl, 2),
+                        'frictions_usd': round(entry_fee + exit_fee + slippage_cost, 2)
+                    })
+                    active_trade = None
 
             if active_trade is None and pending_orders:
                 orders_to_remove = []
@@ -180,37 +219,78 @@ class BacktestEngine:
         trades_df = pd.DataFrame(closed_trades)
         wins = len(trades_df[trades_df['result'] == 'WIN']) if not trades_df.empty else 0
         win_rate = (wins / len(trades_df)) * 100 if not trades_df.empty else 0
+        total_frictions = trades_df['frictions_usd'].sum() if not trades_df.empty else 0.0
         
         return {
             'Total Trades': len(trades_df),
             'Win Rate (%)': round(win_rate, 2),
+            'Total Fees & Slippage ($)': round(total_frictions, 2),
             'Final Equity ($)': round(capital, 2)
         }
 
-# --- SIMULATION RUNNER ---
-if __name__ == "__main__":
-    # Generate 1,000 synthetic price bars to test the bot
-    np.random.seed(42)
-    dates = pd.date_range("2026-01-01", periods=1000, freq="15min")
-    
-    price = 100.0
-    records = []
-    for dt in dates:
-        open_p = price
-        high_p = open_p + abs(np.random.normal(0.2, 0.3))
-        low_p = open_p - abs(np.random.normal(0.2, 0.3))
-        close_p = open_p + np.random.normal(0.05, 0.4)
-        price = close_p
-        records.append({'open': open_p, 'high': high_p, 'low': low_p, 'close': close_p, 'volume': np.random.randint(100, 2000)})
-        
-    df = pd.DataFrame(records, index=dates)
 
-    # Run the backtest
-    print("Running Backtest on 1,000 synthetic candles...")
-    strategy = FvgMssDisplacementStrategy()
-    engine = BacktestEngine(strategy=strategy)
-    results = engine.run(df)
+def fetch_real_data(ticker: str, period: str = "60d", interval: str = "15m") -> pd.DataFrame:
+    """Fetches real historical OHLCV data from Yahoo Finance."""
+    print(f"\nFetching {ticker} data ({interval} timeframe, past {period})...")
+    df = yf.download(ticker, period=period, interval=interval, progress=False)
     
-    print("\n=== BACKTEST RESULTS ===")
-    for key, val in results.items():
-        print(f"{key}: {val}")
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = [col[0].lower() for col in df.columns]
+    else:
+        df.columns = [col.lower() for col in df.columns]
+
+    df = df[['open', 'high', 'low', 'close', 'volume']].dropna()
+    return df
+
+
+def optimize_equities(tickers: List[str]):
+    param_grid = {
+        'atr_multiplier': [1.0, 1.2, 1.5],
+        'vol_multiplier': [1.0, 1.2, 1.5],
+        'risk_reward_ratio': [1.5, 2.0],
+        'swing_window': [2, 3]
+    }
+
+    keys, values = zip(*param_grid.items())
+    permutations = [dict(zip(keys, v)) for v in itertools.product(*values)]
+
+    for ticker in tickers:
+        df = fetch_real_data(ticker=ticker)
+        if df.empty:
+            print(f"Skipping {ticker}, no data returned.")
+            continue
+
+        print(f"Testing {len(permutations)} configurations for {ticker} (including fees & slippage)...")
+        results_list = []
+
+        for params in permutations:
+            strat = FvgMssDisplacementStrategy(
+                account_balance=10000.0,
+                risk_per_trade_pct=0.01,
+                risk_reward_ratio=params['risk_reward_ratio'],
+                atr_multiplier=params['atr_multiplier'],
+                vol_multiplier=params['vol_multiplier'],
+                swing_window=params['swing_window']
+            )
+            
+            engine = BacktestEngine(strategy=strat, fee_pct=0.0005, slippage_pct=0.0002)
+            res = engine.run(df)
+            
+            results_list.append({
+                'Ticker': ticker,
+                **params,
+                'Trades': res['Total Trades'],
+                'Win Rate (%)': res['Win Rate (%)'],
+                'Frictions ($)': res['Total Fees & Slippage ($)'],
+                'Net Profit ($)': round(res['Final Equity ($)'] - 10000.0, 2)
+            })
+
+        results_df = pd.DataFrame(results_list).sort_values(by='Net Profit ($)', ascending=False)
+        print(f"\n=== TOP 3 SETUPS FOR {ticker} ===")
+        print(results_df.head(3).to_string(index=False))
+
+
+if __name__ == "__main__":
+    # Test Stock Indices and Top Tech Equities
+    STOCK_TICKERS = ["QQQ", "NVDA", "SPY", "AAPL", "TSLA", "SMH", "IWM"]
+    optimize_equities(tickers=STOCK_TICKERS)
