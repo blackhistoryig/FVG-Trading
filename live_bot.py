@@ -25,11 +25,10 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def log_message(self, format, *args):
-        # Silence HTTP access logs in stdout to keep terminal clean
         return
 
 def run_http_server():
-    port = int(os.getenv("PORT", 10000))  # Render automatically sets PORT
+    port = int(os.getenv("PORT", 10000))
     server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
     print(f"Health check web server running on port {port}")
     server.serve_forever()
@@ -40,39 +39,29 @@ def run_http_server():
 API_KEY = os.getenv("ALPACA_API_KEY")
 SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
 
-# Trading & Historical Data Clients (Set paper=True for Paper Trading)
 trading_client = TradingClient(API_KEY, SECRET_KEY, paper=True)
 data_client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
 
 # ------------------------------------------------------------------------------
 # 3. CONFIGURATION & CONSTANTS
 # ------------------------------------------------------------------------------
-# Exact backtested watchlist:
 SYMBOLS = ["QQQ", "NVDA", "SPY", "AAPL", "TSLA", "SMH", "IWM"]
+MAX_POSITIONS = 2           
+RISK_REWARD_RATIO = 2.0     
+CHECK_INTERVAL_SECONDS = 60 
 
-MAX_POSITIONS = 2           # Position cap to manage capital exposure
-RISK_REWARD_RATIO = 2.0     # 2:1 Reward-to-Risk setup for FVG trades
-CHECK_INTERVAL_SECONDS = 60 # Check market conditions every 1 minute
-
-# Timezone reference
 EST = pytz.timezone("America/New_York")
 
 # ------------------------------------------------------------------------------
 # 4. HELPER FUNCTIONS & BATCH FVG CORE LOGIC
 # ------------------------------------------------------------------------------
 def is_fed_blackout_active() -> bool:
-    """
-    Checks if current time is within the Fed announcement/press conference 
-    blackout window (1:55 PM EST to 2:45 PM EST).
-    """
     now = datetime.now(EST)
     start_blackout = now.replace(hour=13, minute=55, second=0, microsecond=0)
     end_blackout = now.replace(hour=14, minute=45, second=0, microsecond=0)
-
     return start_blackout <= now <= end_blackout
 
 def get_open_position_count() -> int:
-    """Returns total number of open positions."""
     try:
         positions = trading_client.get_all_positions()
         return len(positions)
@@ -81,16 +70,11 @@ def get_open_position_count() -> int:
         return 0
 
 def check_for_fvg_batch(symbols: list):
-    """
-    Fetches recent 5-minute bars for ALL backtested symbols in a single API call
-    and returns a list of detected FVG signals.
-    """
     signals = []
     try:
         end_time = datetime.now(EST)
         start_time = end_time - timedelta(minutes=60)
         
-        # Batch request: Fetch bars for all tickers at once
         request_params = StockBarsRequest(
             symbol_or_symbols=symbols,
             timeframe=TimeFrame.Minute,
@@ -104,7 +88,6 @@ def check_for_fvg_batch(symbols: list):
         if df.empty:
             return signals
 
-        # Parse DataFrame by symbol
         for symbol in symbols:
             try:
                 if isinstance(df.index, pd.MultiIndex):
@@ -114,39 +97,48 @@ def check_for_fvg_batch(symbols: list):
                 else:
                     symbol_df = df
 
-                if len(symbol_df) < 3:
+                if len(symbol_df) < 4:
                     continue
 
-                # Candle 1, Candle 2 (impulse), Candle 3
-                c1 = symbol_df.iloc[-3]
-                c2 = symbol_df.iloc[-2]
-                c3 = symbol_df.iloc[-1]
+                completed_df = symbol_df.iloc[:-1]
 
-                # Bullish FVG: Candle 1 High < Candle 3 Low
+                c1 = completed_df.iloc[-3]
+                c2 = completed_df.iloc[-2]
+                c3 = completed_df.iloc[-1]
+
                 if c1['high'] < c3['low']:
                     gap_size = c3['low'] - c1['high']
-                    entry_price = c3['low']
-                    signals.append({
-                        "symbol": symbol,
-                        "type": "BULLISH_FVG",
-                        "side": OrderSide.BUY,
-                        "entry": entry_price,
-                        "stop_loss": c1['high'],
-                        "take_profit": entry_price + (gap_size * RISK_REWARD_RATIO)
-                    })
+                    current_price = c3['close']
+                    stop_loss = round(c1['high'], 2)
+                    risk = current_price - stop_loss
+                    
+                    if risk > 0:
+                        take_profit = round(current_price + (risk * RISK_REWARD_RATIO), 2)
+                        signals.append({
+                            "symbol": symbol,
+                            "type": "BULLISH_FVG",
+                            "side": OrderSide.BUY,
+                            "entry": current_price,
+                            "stop_loss": stop_loss,
+                            "take_profit": take_profit
+                        })
 
-                # Bearish FVG: Candle 1 Low > Candle 3 High
                 elif c1['low'] > c3['high']:
                     gap_size = c1['low'] - c3['high']
-                    entry_price = c3['high']
-                    signals.append({
-                        "symbol": symbol,
-                        "type": "BEARISH_FVG",
-                        "side": OrderSide.SELL,
-                        "entry": entry_price,
-                        "stop_loss": c1['low'],
-                        "take_profit": entry_price - (gap_size * RISK_REWARD_RATIO)
-                    })
+                    current_price = c3['close']
+                    stop_loss = round(c1['low'], 2)
+                    risk = stop_loss - current_price
+                    
+                    if risk > 0:
+                        take_profit = round(current_price - (risk * RISK_REWARD_RATIO), 2)
+                        signals.append({
+                            "symbol": symbol,
+                            "type": "BEARISH_FVG",
+                            "side": OrderSide.SELL,
+                            "entry": current_price,
+                            "stop_loss": stop_loss,
+                            "take_profit": take_profit
+                        })
 
             except Exception as inner_e:
                 print(f"Error evaluating FVG for {symbol}: {inner_e}")
@@ -159,14 +151,13 @@ def check_for_fvg_batch(symbols: list):
         return []
 
 def execute_bracket_order(symbol: str, side: OrderSide, qty: float, entry_price: float, stop_loss_price: float, take_profit_price: float):
-    """Executes a GTC bracket order with dynamic stop-loss and take-profit targets."""
     order_data = MarketOrderRequest(
         symbol=symbol,
         qty=qty,
         side=side,
         time_in_force=TimeInForce.GTC,
-        take_profit=TakeProfitRequest(limit_price=round(take_profit_price, 2)),
-        stop_loss=StopLossRequest(stop_price=round(stop_loss_price, 2))
+        take_profit=TakeProfitRequest(limit_price=take_profit_price),
+        stop_loss=StopLossRequest(stop_price=stop_loss_price)
     )
     
     try:
@@ -185,35 +176,36 @@ def run_bot():
         try:
             now_est = datetime.now(EST)
             
-            # 1. Fed Blackout Filter
             if is_fed_blackout_active():
-                print(f"[{now_est.strftime('%H:%M:%S EST')}] Fed Blackout Active (1:55 PM - 2:45 PM EST). Paused.")
+                print(f"[{now_est.strftime('%H:%M:%S EST')}] Fed Blackout Active. Paused.")
                 time.sleep(CHECK_INTERVAL_SECONDS)
                 continue
 
-            # 2. Risk Management Position Cap
             open_positions = get_open_position_count()
             if open_positions >= MAX_POSITIONS:
                 print(f"[{now_est.strftime('%H:%M:%S EST')}] Position cap reached ({open_positions}/{MAX_POSITIONS}). Paused.")
                 time.sleep(CHECK_INTERVAL_SECONDS)
                 continue
 
-            # 3. Batch Scan FVG Signals & Execute
+            print(f"[{now_est.strftime('%H:%M:%S EST')}] Scanning {len(SYMBOLS)} symbols for FVG setups...")
             signals = check_for_fvg_batch(SYMBOLS)
-            for signal in signals:
-                print(f"[{now_est.strftime('%H:%M:%S EST')}] {signal['type']} detected on {signal['symbol']}!")
-                
-                # Default testing quantity (1 share)
-                qty = 1 
-                
-                execute_bracket_order(
-                    symbol=signal['symbol'],
-                    side=signal['side'],
-                    qty=qty,
-                    entry_price=signal['entry'],
-                    stop_loss_price=signal['stop_loss'],
-                    take_profit_price=signal['take_profit']
-                )
+            
+            if not signals:
+                print(f"[{now_est.strftime('%H:%M:%S EST')}] Scan complete. No active FVG signals.")
+            else:
+                for signal in signals:
+                    print(f"[{now_est.strftime('%H:%M:%S EST')}] {signal['type']} detected on {signal['symbol']}!")
+                    
+                    qty = 1 
+                    
+                    execute_bracket_order(
+                        symbol=signal['symbol'],
+                        side=signal['side'],
+                        qty=qty,
+                        entry_price=signal['entry'],
+                        stop_loss_price=signal['stop_loss'],
+                        take_profit_price=signal['take_profit']
+                    )
 
             time.sleep(CHECK_INTERVAL_SECONDS)
 
@@ -222,9 +214,6 @@ def run_bot():
             time.sleep(CHECK_INTERVAL_SECONDS)
 
 if __name__ == "__main__":
-    # Start web server for Render health checks
     http_thread = threading.Thread(target=run_http_server, daemon=True)
     http_thread.start()
-
-    # Start main trading loop
     run_bot()
