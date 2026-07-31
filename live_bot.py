@@ -11,6 +11,7 @@ from alpaca.trading.enums import OrderSide, TimeInForce
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
+from alpaca.data.enums import DataFeed
 
 # ------------------------------------------------------------------------------
 # 1. LIGHTWEIGHT HTTP SERVER (For Render Free Tier Compatibility)
@@ -75,11 +76,13 @@ def check_for_fvg_batch(symbols: list):
         end_time = datetime.now(EST)
         start_time = end_time - timedelta(minutes=60)
         
+        # Specified feed=DataFeed.IEX to bypass Alpaca free tier SIP restrictions
         request_params = StockBarsRequest(
             symbol_or_symbols=symbols,
             timeframe=TimeFrame.Minute,
             start=start_time,
-            end=end_time
+            end=end_time,
+            feed=DataFeed.IEX
         )
         
         bars = data_client.get_stock_bars(request_params)
@@ -106,8 +109,8 @@ def check_for_fvg_batch(symbols: list):
                 c2 = completed_df.iloc[-2]
                 c3 = completed_df.iloc[-1]
 
+                # Bullish FVG
                 if c1['high'] < c3['low']:
-                    gap_size = c3['low'] - c1['high']
                     current_price = c3['close']
                     stop_loss = round(c1['high'], 2)
                     risk = current_price - stop_loss
@@ -123,8 +126,8 @@ def check_for_fvg_batch(symbols: list):
                             "take_profit": take_profit
                         })
 
+                # Bearish FVG
                 elif c1['low'] > c3['high']:
-                    gap_size = c1['low'] - c3['high']
                     current_price = c3['close']
                     stop_loss = round(c1['low'], 2)
                     risk = stop_loss - current_price
