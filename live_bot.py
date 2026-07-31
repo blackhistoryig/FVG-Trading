@@ -47,7 +47,9 @@ data_client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
 # ------------------------------------------------------------------------------
 # 3. CONFIGURATION & CONSTANTS
 # ------------------------------------------------------------------------------
-SYMBOLS = ["NVDA", "SPY"]
+# Exact backtested watchlist:
+SYMBOLS = ["QQQ", "NVDA", "SPY", "AAPL", "TSLA", "SMH", "IWM"]
+
 MAX_POSITIONS = 2           # Position cap to manage capital exposure
 RISK_REWARD_RATIO = 2.0     # 2:1 Reward-to-Risk setup for FVG trades
 CHECK_INTERVAL_SECONDS = 60 # Check market conditions every 1 minute
@@ -56,7 +58,7 @@ CHECK_INTERVAL_SECONDS = 60 # Check market conditions every 1 minute
 EST = pytz.timezone("America/New_York")
 
 # ------------------------------------------------------------------------------
-# 4. HELPER FUNCTIONS & FVG CORE LOGIC
+# 4. HELPER FUNCTIONS & BATCH FVG CORE LOGIC
 # ------------------------------------------------------------------------------
 def is_fed_blackout_active() -> bool:
     """
@@ -78,17 +80,19 @@ def get_open_position_count() -> int:
         print(f"Error fetching positions: {e}")
         return 0
 
-def check_for_fvg(symbol: str):
+def check_for_fvg_batch(symbols: list):
     """
-    Fetches recent 5-minute bars for a symbol and checks for a 3-candle Fair Value Gap.
-    Returns a dict with signal details if an FVG is found, otherwise None.
+    Fetches recent 5-minute bars for ALL backtested symbols in a single API call
+    and returns a list of detected FVG signals.
     """
+    signals = []
     try:
         end_time = datetime.now(EST)
         start_time = end_time - timedelta(minutes=60)
         
+        # Batch request: Fetch bars for all tickers at once
         request_params = StockBarsRequest(
-            symbol_or_symbols=symbol,
+            symbol_or_symbols=symbols,
             timeframe=TimeFrame.Minute,
             start=start_time,
             end=end_time
@@ -97,52 +101,62 @@ def check_for_fvg(symbol: str):
         bars = data_client.get_stock_bars(request_params)
         df = bars.df
         
-        if df.empty or len(df) < 3:
-            return None
+        if df.empty:
+            return signals
 
-        if isinstance(df.index, pd.MultiIndex):
-            df = df.xs(symbol)
+        # Parse DataFrame by symbol
+        for symbol in symbols:
+            try:
+                if isinstance(df.index, pd.MultiIndex):
+                    if symbol not in df.index.levels[0]:
+                        continue
+                    symbol_df = df.xs(symbol)
+                else:
+                    symbol_df = df
 
-        # Candle 1, Candle 2 (impulse), Candle 3
-        c1 = df.iloc[-3]
-        c2 = df.iloc[-2]
-        c3 = df.iloc[-1]
+                if len(symbol_df) < 3:
+                    continue
 
-        # Bullish FVG: Candle 1 High < Candle 3 Low
-        if c1['high'] < c3['low']:
-            gap_size = c3['low'] - c1['high']
-            entry_price = c3['low']
-            stop_loss = c1['high']
-            take_profit = entry_price + (gap_size * RISK_REWARD_RATIO)
-            
-            return {
-                "type": "BULLISH_FVG",
-                "side": OrderSide.BUY,
-                "entry": entry_price,
-                "stop_loss": stop_loss,
-                "take_profit": take_profit
-            }
+                # Candle 1, Candle 2 (impulse), Candle 3
+                c1 = symbol_df.iloc[-3]
+                c2 = symbol_df.iloc[-2]
+                c3 = symbol_df.iloc[-1]
 
-        # Bearish FVG: Candle 1 Low > Candle 3 High
-        elif c1['low'] > c3['high']:
-            gap_size = c1['low'] - c3['high']
-            entry_price = c3['high']
-            stop_loss = c1['low']
-            take_profit = entry_price - (gap_size * RISK_REWARD_RATIO)
-            
-            return {
-                "type": "BEARISH_FVG",
-                "side": OrderSide.SELL,
-                "entry": entry_price,
-                "stop_loss": stop_loss,
-                "take_profit": take_profit
-            }
+                # Bullish FVG: Candle 1 High < Candle 3 Low
+                if c1['high'] < c3['low']:
+                    gap_size = c3['low'] - c1['high']
+                    entry_price = c3['low']
+                    signals.append({
+                        "symbol": symbol,
+                        "type": "BULLISH_FVG",
+                        "side": OrderSide.BUY,
+                        "entry": entry_price,
+                        "stop_loss": c1['high'],
+                        "take_profit": entry_price + (gap_size * RISK_REWARD_RATIO)
+                    })
 
-        return None
+                # Bearish FVG: Candle 1 Low > Candle 3 High
+                elif c1['low'] > c3['high']:
+                    gap_size = c1['low'] - c3['high']
+                    entry_price = c3['high']
+                    signals.append({
+                        "symbol": symbol,
+                        "type": "BEARISH_FVG",
+                        "side": OrderSide.SELL,
+                        "entry": entry_price,
+                        "stop_loss": c1['low'],
+                        "take_profit": entry_price - (gap_size * RISK_REWARD_RATIO)
+                    })
+
+            except Exception as inner_e:
+                print(f"Error evaluating FVG for {symbol}: {inner_e}")
+                continue
+
+        return signals
 
     except Exception as e:
-        print(f"Error checking FVG for {symbol}: {e}")
-        return None
+        print(f"Error during batch bar fetch: {e}")
+        return []
 
 def execute_bracket_order(symbol: str, side: OrderSide, qty: float, entry_price: float, stop_loss_price: float, take_profit_price: float):
     """Executes a GTC bracket order with dynamic stop-loss and take-profit targets."""
@@ -184,23 +198,22 @@ def run_bot():
                 time.sleep(CHECK_INTERVAL_SECONDS)
                 continue
 
-            # 3. Scan FVG Signals & Place Orders
-            for symbol in SYMBOLS:
-                signal = check_for_fvg(symbol)
-                if signal:
-                    print(f"[{now_est.strftime('%H:%M:%S EST')}] {signal['type']} detected on {symbol}!")
-                    
-                    # Default testing quantity (1 share)
-                    qty = 1 
-                    
-                    execute_bracket_order(
-                        symbol=symbol,
-                        side=signal['side'],
-                        qty=qty,
-                        entry_price=signal['entry'],
-                        stop_loss_price=signal['stop_loss'],
-                        take_profit_price=signal['take_profit']
-                    )
+            # 3. Batch Scan FVG Signals & Execute
+            signals = check_for_fvg_batch(SYMBOLS)
+            for signal in signals:
+                print(f"[{now_est.strftime('%H:%M:%S EST')}] {signal['type']} detected on {signal['symbol']}!")
+                
+                # Default testing quantity (1 share)
+                qty = 1 
+                
+                execute_bracket_order(
+                    symbol=signal['symbol'],
+                    side=signal['side'],
+                    qty=qty,
+                    entry_price=signal['entry'],
+                    stop_loss_price=signal['stop_loss'],
+                    take_profit_price=signal['take_profit']
+                )
 
             time.sleep(CHECK_INTERVAL_SECONDS)
 
