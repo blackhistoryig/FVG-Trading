@@ -14,7 +14,7 @@ from alpaca.data.timeframe import TimeFrame
 from alpaca.data.enums import DataFeed
 
 # ------------------------------------------------------------------------------
-# 1. LIGHTWEIGHT HTTP SERVER (For Render Free Tier Compatibility)
+# 1. LIGHTWEIGHT HTTP SERVER (For Render & cron-job.org Pings)
 # ------------------------------------------------------------------------------
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -22,8 +22,16 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header('Content-Type', 'text/plain')
         self.send_header('Content-Length', str(len(body)))
+        self.send_header('Connection', 'close')
         self.end_headers()
         self.wfile.write(body)
+
+    def do_HEAD(self):
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/plain')
+        self.send_header('Content-Length', '2')
+        self.send_header('Connection', 'close')
+        self.end_headers()
 
     def log_message(self, format, *args):
         return
@@ -35,7 +43,7 @@ def run_http_server():
     server.serve_forever()
 
 # ------------------------------------------------------------------------------
-# 2. AUTHENTICATION (Render Environment Variables)
+# 2. AUTHENTICATION
 # ------------------------------------------------------------------------------
 API_KEY = os.getenv("ALPACA_API_KEY")
 SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
@@ -44,23 +52,109 @@ trading_client = TradingClient(API_KEY, SECRET_KEY, paper=True)
 data_client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
 
 # ------------------------------------------------------------------------------
-# 3. CONFIGURATION & CONSTANTS
+# 3. CONFIGURATION & RISK CONSTANTS
 # ------------------------------------------------------------------------------
 SYMBOLS = ["QQQ", "NVDA", "SPY", "AAPL", "TSLA", "SMH", "IWM"]
 MAX_POSITIONS = 2           
 RISK_REWARD_RATIO = 2.0     
 CHECK_INTERVAL_SECONDS = 60 
 
+# Risk Management & Safeguards
+RISK_PER_TRADE_PCT = 0.01   # Risk 1% of account equity per trade
+DAILY_MAX_LOSS_PCT = 0.03   # 3% Daily circuit breaker
+MIN_GAP_SIZE = 0.15         # Minimum $0.15 gap width to avoid bid-ask noise
+
 EST = pytz.timezone("America/New_York")
 
+# Global State Tracking
+DAILY_START_EQUITY = None
+CIRCUIT_BREAKER_TRIPPED = False
+CURRENT_DAY = None
+
 # ------------------------------------------------------------------------------
-# 4. HELPER FUNCTIONS & BATCH FVG CORE LOGIC
+# 4. TIME & RISK MANAGEMENT HELPERS
 # ------------------------------------------------------------------------------
+def check_and_reset_daily_state():
+    """Resets equity baseline at start of a new trading day."""
+    global DAILY_START_EQUITY, CIRCUIT_BREAKER_TRIPPED, CURRENT_DAY
+    today_str = datetime.now(EST).strftime("%Y-%m-%d")
+    
+    if CURRENT_DAY != today_str:
+        CURRENT_DAY = today_str
+        CIRCUIT_BREAKER_TRIPPED = False
+        try:
+            account = trading_client.get_account()
+            DAILY_START_EQUITY = float(account.equity)
+            print(f"[{datetime.now(EST).strftime('%H:%M:%S EST')}] New Day Started ({CURRENT_DAY}). Baseline Equity: ${DAILY_START_EQUITY:,.2f}")
+        except Exception as e:
+            print(f"Error fetching account for daily state reset: {e}")
+
+def is_circuit_breaker_tripped() -> bool:
+    """Checks if daily loss exceeds 3% threshold."""
+    global CIRCUIT_BREAKER_TRIPPED
+    if CIRCUIT_BREAKER_TRIPPED:
+        return True
+    
+    try:
+        account = trading_client.get_account()
+        current_equity = float(account.equity)
+        if DAILY_START_EQUITY and DAILY_START_EQUITY > 0:
+            loss_pct = (current_equity - DAILY_START_EQUITY) / DAILY_START_EQUITY
+            if loss_pct <= -DAILY_MAX_LOSS_PCT:
+                print(f"[CIRCUIT BREAKER TRIPPED] Loss of {loss_pct*100:.2f}% exceeds max allowed (-{DAILY_MAX_LOSS_PCT*100}%). Halting trading for today.")
+                close_all_positions_and_orders()
+                CIRCUIT_BREAKER_TRIPPED = True
+                return True
+    except Exception as e:
+        print(f"Error checking circuit breaker: {e}")
+    
+    return False
+
+def calculate_dynamic_position_size(risk_per_share: float) -> int:
+    """Sizes position dynamically to risk exactly 1% of account equity."""
+    try:
+        account = trading_client.get_account()
+        equity = float(account.equity)
+        risk_budget = equity * RISK_PER_TRADE_PCT
+        
+        if risk_per_share <= 0:
+            return 1
+            
+        shares = int(risk_budget / risk_per_share)
+        return max(1, shares)  # Ensure at least 1 share
+    except Exception as e:
+        print(f"Error calculating dynamic position size: {e}")
+        return 1
+
 def is_fed_blackout_active() -> bool:
+    """Blocks entry during Fed announcement window (1:55 PM - 2:45 PM EST)."""
     now = datetime.now(EST)
     start_blackout = now.replace(hour=13, minute=55, second=0, microsecond=0)
     end_blackout = now.replace(hour=14, minute=45, second=0, microsecond=0)
     return start_blackout <= now <= end_blackout
+
+def is_market_close_approaching() -> bool:
+    """Stop opening NEW positions after 3:45 PM EST."""
+    now = datetime.now(EST)
+    cutoff = now.replace(hour=15, minute=45, second=0, microsecond=0)
+    return now >= cutoff
+
+def is_eod_flatten_time() -> bool:
+    """Triggers total position liquidation between 3:55 PM and 4:00 PM EST."""
+    now = datetime.now(EST)
+    flatten_time = now.replace(hour=15, minute=55, second=0, microsecond=0)
+    market_close = now.replace(hour=16, minute=0, second=0, microsecond=0)
+    return flatten_time <= now <= market_close
+
+def close_all_positions_and_orders():
+    """Liquidates all open positions and cancels all pending orders."""
+    try:
+        print("[FLATTEN] Closing all positions and cancelling active orders...")
+        trading_client.cancel_orders()
+        trading_client.close_all_positions(cancel_orders=True)
+        print("[FLATTEN] All positions and orders successfully closed!")
+    except Exception as e:
+        print(f"[FLATTEN] Error closing positions: {e}")
 
 def get_open_position_count() -> int:
     try:
@@ -70,13 +164,15 @@ def get_open_position_count() -> int:
         print(f"Error fetching positions: {e}")
         return 0
 
+# ------------------------------------------------------------------------------
+# 5. CORE BATCH FVG SCANNER (With Gap Size Filter)
+# ------------------------------------------------------------------------------
 def check_for_fvg_batch(symbols: list):
     signals = []
     try:
         end_time = datetime.now(EST)
         start_time = end_time - timedelta(minutes=60)
         
-        # Specified feed=DataFeed.IEX to bypass Alpaca free tier SIP restrictions
         request_params = StockBarsRequest(
             symbol_or_symbols=symbols,
             timeframe=TimeFrame.Minute,
@@ -109,38 +205,48 @@ def check_for_fvg_batch(symbols: list):
                 c2 = completed_df.iloc[-2]
                 c3 = completed_df.iloc[-1]
 
-                # Bullish FVG
+                # Bullish FVG (c3.low > c1.high)
                 if c1['high'] < c3['low']:
+                    gap_size = c3['low'] - c1['high']
+                    if gap_size < MIN_GAP_SIZE:
+                        continue  # Skip micro-gaps under threshold
+                        
                     current_price = c3['close']
                     stop_loss = round(c1['high'], 2)
-                    risk = current_price - stop_loss
+                    risk_per_share = current_price - stop_loss
                     
-                    if risk > 0:
-                        take_profit = round(current_price + (risk * RISK_REWARD_RATIO), 2)
+                    if risk_per_share > 0:
+                        take_profit = round(current_price + (risk_per_share * RISK_REWARD_RATIO), 2)
                         signals.append({
                             "symbol": symbol,
                             "type": "BULLISH_FVG",
                             "side": OrderSide.BUY,
                             "entry": current_price,
                             "stop_loss": stop_loss,
-                            "take_profit": take_profit
+                            "take_profit": take_profit,
+                            "risk_per_share": risk_per_share
                         })
 
-                # Bearish FVG
+                # Bearish FVG (c1.low > c3.high)
                 elif c1['low'] > c3['high']:
+                    gap_size = c1['low'] - c3['high']
+                    if gap_size < MIN_GAP_SIZE:
+                        continue  # Skip micro-gaps under threshold
+
                     current_price = c3['close']
                     stop_loss = round(c1['low'], 2)
-                    risk = stop_loss - current_price
+                    risk_per_share = stop_loss - current_price
                     
-                    if risk > 0:
-                        take_profit = round(current_price - (risk * RISK_REWARD_RATIO), 2)
+                    if risk_per_share > 0:
+                        take_profit = round(current_price - (risk_per_share * RISK_REWARD_RATIO), 2)
                         signals.append({
                             "symbol": symbol,
                             "type": "BEARISH_FVG",
                             "side": OrderSide.SELL,
                             "entry": current_price,
                             "stop_loss": stop_loss,
-                            "take_profit": take_profit
+                            "take_profit": take_profit,
+                            "risk_per_share": risk_per_share
                         })
 
             except Exception as inner_e:
@@ -153,7 +259,7 @@ def check_for_fvg_batch(symbols: list):
         print(f"Error during batch bar fetch: {e}")
         return []
 
-def execute_bracket_order(symbol: str, side: OrderSide, qty: float, entry_price: float, stop_loss_price: float, take_profit_price: float):
+def execute_bracket_order(symbol: str, side: OrderSide, qty: int, entry_price: float, stop_loss_price: float, take_profit_price: float):
     order_data = MarketOrderRequest(
         symbol=symbol,
         qty=qty,
@@ -165,12 +271,12 @@ def execute_bracket_order(symbol: str, side: OrderSide, qty: float, entry_price:
     
     try:
         order = trading_client.submit_order(order_data)
-        print(f"Successfully placed bracket order for {symbol}: ID {order.id}")
+        print(f"Successfully placed bracket order for {symbol} ({qty} shares): ID {order.id}")
     except Exception as e:
         print(f"Failed to place order for {symbol}: {e}")
 
 # ------------------------------------------------------------------------------
-# 5. MAIN TRADING LOOP
+# 6. MAIN TRADING LOOP
 # ------------------------------------------------------------------------------
 def run_bot():
     print("Starting FVG Trading Engine loop...")
@@ -178,18 +284,40 @@ def run_bot():
     while True:
         try:
             now_est = datetime.now(EST)
-            
+            check_and_reset_daily_state()
+
+            # 1. Check Circuit Breaker
+            if is_circuit_breaker_tripped():
+                print(f"[{now_est.strftime('%H:%M:%S EST')}] Circuit Breaker active. Bot paused for remainder of day.")
+                time.sleep(CHECK_INTERVAL_SECONDS)
+                continue
+
+            # 2. End-of-Day Position Liquidation (3:55 PM EST)
+            if is_eod_flatten_time():
+                close_all_positions_and_orders()
+                time.sleep(CHECK_INTERVAL_SECONDS)
+                continue
+
+            # 3. Cutoff New Entries near Market Close (After 3:45 PM EST)
+            if is_market_close_approaching():
+                print(f"[{now_est.strftime('%H:%M:%S EST')}] Past 3:45 PM EST cutoff. No new positions permitted.")
+                time.sleep(CHECK_INTERVAL_SECONDS)
+                continue
+
+            # 4. Fed Blackout Filter
             if is_fed_blackout_active():
                 print(f"[{now_est.strftime('%H:%M:%S EST')}] Fed Blackout Active. Paused.")
                 time.sleep(CHECK_INTERVAL_SECONDS)
                 continue
 
+            # 5. Position Limit Filter
             open_positions = get_open_position_count()
             if open_positions >= MAX_POSITIONS:
                 print(f"[{now_est.strftime('%H:%M:%S EST')}] Position cap reached ({open_positions}/{MAX_POSITIONS}). Paused.")
                 time.sleep(CHECK_INTERVAL_SECONDS)
                 continue
 
+            # 6. Execute Scans
             print(f"[{now_est.strftime('%H:%M:%S EST')}] Scanning {len(SYMBOLS)} symbols for FVG setups...")
             signals = check_for_fvg_batch(SYMBOLS)
             
@@ -199,7 +327,7 @@ def run_bot():
                 for signal in signals:
                     print(f"[{now_est.strftime('%H:%M:%S EST')}] {signal['type']} detected on {signal['symbol']}!")
                     
-                    qty = 1 
+                    qty = calculate_dynamic_position_size(signal['risk_per_share'])
                     
                     execute_bracket_order(
                         symbol=signal['symbol'],
