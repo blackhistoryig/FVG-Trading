@@ -315,12 +315,18 @@ def check_for_fvg_batch(symbols: list):
         return []
 
 def execute_bracket_order(symbol: str, side: OrderSide, qty: int, entry_price: float, stop_loss_price: float, take_profit_price: float):
+    # Safety Check: Enforce strict Alpaca Stop Loss offset validation
+    if side == OrderSide.BUY and stop_loss_price >= entry_price:
+        stop_loss_price = round(entry_price - 0.05, 2)
+    elif side == OrderSide.SELL and stop_loss_price <= entry_price:
+        stop_loss_price = round(entry_price + 0.05, 2)
+
     order_data = MarketOrderRequest(
         symbol=symbol,
         qty=qty,
         side=side,
         time_in_force=TimeInForce.GTC,
-        order_class=OrderClass.BRACKET,  # Required for attaching SL and TP legs
+        order_class=OrderClass.BRACKET,
         take_profit=TakeProfitRequest(limit_price=take_profit_price),
         stop_loss=StopLossRequest(stop_price=stop_loss_price)
     )
