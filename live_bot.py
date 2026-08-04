@@ -59,10 +59,11 @@ MAX_POSITIONS = 2
 RISK_REWARD_RATIO = 2.0     
 CHECK_INTERVAL_SECONDS = 60 
 
-# Risk Management & Safeguards
-RISK_PER_TRADE_PCT = 0.01   # Risk 1% of account equity per trade
-DAILY_MAX_LOSS_PCT = 0.03   # 3% Daily circuit breaker
-MIN_GAP_SIZE = 0.15         # Minimum $0.15 gap width to avoid bid-ask noise
+# Professional Risk Management Controls
+RISK_PER_TRADE_PCT = 0.01       # Risk 1% of account equity per trade
+MAX_POSITION_ALLOCATION = 0.25  # Max 25% of account equity invested in any single stock
+DAILY_MAX_LOSS_PCT = 0.03       # 3% Daily circuit breaker shutdown
+MIN_GAP_SIZE = 0.15             # Minimum $0.15 gap width to avoid bid-ask noise
 
 EST = pytz.timezone("America/New_York")
 
@@ -110,18 +111,33 @@ def is_circuit_breaker_tripped() -> bool:
     
     return False
 
-def calculate_dynamic_position_size(risk_per_share: float) -> int:
-    """Sizes position dynamically to risk exactly 1% of account equity."""
+def calculate_dynamic_position_size(symbol: str, current_price: float, risk_per_share: float) -> int:
+    """
+    Institutional Sizing Model:
+    1. Sizes trade to risk exactly 1% of account equity based on stop distance.
+    2. Enforces a hard cap of 25% total equity allocation per trade to ensure equal portfolio balance.
+    """
     try:
         account = trading_client.get_account()
         equity = float(account.equity)
-        risk_budget = equity * RISK_PER_TRADE_PCT
         
+        # 1. Calculate ideal shares for 1% account risk
+        risk_budget = equity * RISK_PER_TRADE_PCT
         if risk_per_share <= 0:
             return 1
-            
-        shares = int(risk_budget / risk_per_share)
-        return max(1, shares)  # Ensure at least 1 share
+        shares_by_risk = int(risk_budget / risk_per_share)
+        
+        # 2. Portfolio Cap: Max 25% of account equity per position
+        max_capital_allowed = equity * MAX_POSITION_ALLOCATION
+        shares_by_cap = int(max_capital_allowed / current_price)
+        
+        # 3. Choose the stricter of the two limits
+        final_shares = min(shares_by_risk, shares_by_cap)
+        final_shares = max(1, final_shares) # At least 1 share
+        
+        print(f"[SIZING] {symbol}: Risk Target = {shares_by_risk} sh | 25% Portfolio Cap = {shares_by_cap} sh | Final Order = {final_shares} sh")
+        return final_shares
+
     except Exception as e:
         print(f"Error calculating dynamic position size: {e}")
         return 1
@@ -327,7 +343,11 @@ def run_bot():
                 for signal in signals:
                     print(f"[{now_est.strftime('%H:%M:%S EST')}] {signal['type']} detected on {signal['symbol']}!")
                     
-                    qty = calculate_dynamic_position_size(signal['risk_per_share'])
+                    qty = calculate_dynamic_position_size(
+                        symbol=signal['symbol'],
+                        current_price=signal['entry'],
+                        risk_per_share=signal['risk_per_share']
+                    )
                     
                     execute_bracket_order(
                         symbol=signal['symbol'],
