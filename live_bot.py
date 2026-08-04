@@ -9,7 +9,7 @@ import pytz
 import pandas as pd
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest, TakeProfitRequest, StopLossRequest
-from alpaca.trading.enums import OrderSide, TimeInForce
+from alpaca.trading.enums import OrderSide, TimeInForce, OrderClass
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
@@ -320,6 +320,7 @@ def execute_bracket_order(symbol: str, side: OrderSide, qty: int, entry_price: f
         qty=qty,
         side=side,
         time_in_force=TimeInForce.GTC,
+        order_class=OrderClass.BRACKET,  # Required for attaching SL and TP legs
         take_profit=TakeProfitRequest(limit_price=take_profit_price),
         stop_loss=StopLossRequest(stop_price=stop_loss_price)
     )
