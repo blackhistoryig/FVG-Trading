@@ -1,6 +1,8 @@
 import os
 import time
 import threading
+import json
+import urllib.request
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime, timedelta
 import pytz
@@ -71,24 +73,68 @@ EST = pytz.timezone("America/New_York")
 DAILY_START_EQUITY = None
 CIRCUIT_BREAKER_TRIPPED = False
 CURRENT_DAY = None
+FOMC_MEETING_DATES = set()
+
+# Backup Static 2026 FOMC Announcement Dates (YYYY-MM-DD)
+STATIC_2026_FOMC_DATES = {
+    "2026-01-28", "2026-03-18", "2026-05-06", "2026-06-17",
+    "2026-07-29", "2026-09-16", "2026-10-28", "2026-12-16"
+}
 
 # ------------------------------------------------------------------------------
 # 4. TIME & RISK MANAGEMENT HELPERS
 # ------------------------------------------------------------------------------
+def load_fomc_calendar():
+    """Fetches Fed meeting days or falls back to standard calendar schedule."""
+    global FOMC_MEETING_DATES
+    try:
+        url = "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=5) as response:
+            html = response.read().decode('utf-8')
+            
+        detected_dates = set()
+        for date_str in STATIC_2026_FOMC_DATES:
+            if date_str in html or datetime.strptime(date_str, "%Y-%m-%d").strftime("%B %d") in html:
+                detected_dates.add(date_str)
+                
+        if detected_dates:
+            FOMC_MEETING_DATES = detected_dates
+        else:
+            FOMC_MEETING_DATES = STATIC_2026_FOMC_DATES
+            
+        print(f"[FOMC CALENDAR] Active Fed announcement dates loaded: {sorted(list(FOMC_MEETING_DATES))}")
+    except Exception as e:
+        print(f"[FOMC CALENDAR] Could not reach Fed endpoint ({e}). Utilizing fallback 2026 schedule.")
+        FOMC_MEETING_DATES = STATIC_2026_FOMC_DATES
+
 def check_and_reset_daily_state():
-    """Resets equity baseline at start of a new trading day."""
+    """Resets equity baseline and re-verifies parameters at start of a new trading day."""
     global DAILY_START_EQUITY, CIRCUIT_BREAKER_TRIPPED, CURRENT_DAY
     today_str = datetime.now(EST).strftime("%Y-%m-%d")
     
     if CURRENT_DAY != today_str:
         CURRENT_DAY = today_str
         CIRCUIT_BREAKER_TRIPPED = False
+        load_fomc_calendar()
         try:
             account = trading_client.get_account()
             DAILY_START_EQUITY = float(account.equity)
             print(f"[{datetime.now(EST).strftime('%H:%M:%S EST')}] New Day Started ({CURRENT_DAY}). Baseline Equity: ${DAILY_START_EQUITY:,.2f}")
         except Exception as e:
             print(f"Error fetching account for daily state reset: {e}")
+
+def is_fed_blackout_active() -> bool:
+    """Blocks entry ONLY on verified Fed announcement days during 1:55 PM - 2:45 PM EST."""
+    now = datetime.now(EST)
+    today_str = now.strftime("%Y-%m-%d")
+    
+    if today_str not in FOMC_MEETING_DATES:
+        return False
+        
+    start_blackout = now.replace(hour=13, minute=55, second=0, microsecond=0)
+    end_blackout = now.replace(hour=14, minute=45, second=0, microsecond=0)
+    return start_blackout <= now <= end_blackout
 
 def is_circuit_breaker_tripped() -> bool:
     """Checks if daily loss exceeds 3% threshold."""
@@ -133,7 +179,7 @@ def calculate_dynamic_position_size(symbol: str, current_price: float, risk_per_
         
         # 3. Choose the stricter of the two limits
         final_shares = min(shares_by_risk, shares_by_cap)
-        final_shares = max(1, final_shares) # At least 1 share
+        final_shares = max(1, final_shares)
         
         print(f"[SIZING] {symbol}: Risk Target = {shares_by_risk} sh | 25% Portfolio Cap = {shares_by_cap} sh | Final Order = {final_shares} sh")
         return final_shares
@@ -141,13 +187,6 @@ def calculate_dynamic_position_size(symbol: str, current_price: float, risk_per_
     except Exception as e:
         print(f"Error calculating dynamic position size: {e}")
         return 1
-
-def is_fed_blackout_active() -> bool:
-    """Blocks entry during Fed announcement window (1:55 PM - 2:45 PM EST)."""
-    now = datetime.now(EST)
-    start_blackout = now.replace(hour=13, minute=55, second=0, microsecond=0)
-    end_blackout = now.replace(hour=14, minute=45, second=0, microsecond=0)
-    return start_blackout <= now <= end_blackout
 
 def is_market_close_approaching() -> bool:
     """Stop opening NEW positions after 3:45 PM EST."""
@@ -225,7 +264,7 @@ def check_for_fvg_batch(symbols: list):
                 if c1['high'] < c3['low']:
                     gap_size = c3['low'] - c1['high']
                     if gap_size < MIN_GAP_SIZE:
-                        continue  # Skip micro-gaps under threshold
+                        continue
                         
                     current_price = c3['close']
                     stop_loss = round(c1['high'], 2)
@@ -247,7 +286,7 @@ def check_for_fvg_batch(symbols: list):
                 elif c1['low'] > c3['high']:
                     gap_size = c1['low'] - c3['high']
                     if gap_size < MIN_GAP_SIZE:
-                        continue  # Skip micro-gaps under threshold
+                        continue
 
                     current_price = c3['close']
                     stop_loss = round(c1['low'], 2)
@@ -296,6 +335,7 @@ def execute_bracket_order(symbol: str, side: OrderSide, qty: int, entry_price: f
 # ------------------------------------------------------------------------------
 def run_bot():
     print("Starting FVG Trading Engine loop...")
+    load_fomc_calendar()
     
     while True:
         try:
@@ -320,9 +360,9 @@ def run_bot():
                 time.sleep(CHECK_INTERVAL_SECONDS)
                 continue
 
-            # 4. Fed Blackout Filter
+            # 4. Dynamic Fed Blackout Filter
             if is_fed_blackout_active():
-                print(f"[{now_est.strftime('%H:%M:%S EST')}] Fed Blackout Active. Paused.")
+                print(f"[{now_est.strftime('%H:%M:%S EST')}] FOMC Announcement Day: Fed Blackout Active. Paused.")
                 time.sleep(CHECK_INTERVAL_SECONDS)
                 continue
 
