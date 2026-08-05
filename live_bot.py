@@ -315,19 +315,27 @@ def check_for_fvg_batch(symbols: list):
         return []
 
 def execute_bracket_order(symbol: str, side: OrderSide, qty: int, entry_price: float, stop_loss_price: float, take_profit_price: float):
-    # Dynamic Live Quote Verification to prevent Alpaca offset rejection
+    # 1. Fetch live quote safely (falling back to entry_price if bid/ask is zero or unpopulated)
+    live_price = entry_price
     try:
         latest_quote_req = StockLatestQuoteRequest(symbol_or_symbols=symbol, feed=DataFeed.IEX)
         latest_quote = data_client.get_stock_latest_quote(latest_quote_req)
-        live_price = float(latest_quote[symbol].ask_price) if side == OrderSide.BUY else float(latest_quote[symbol].bid_price)
-    except Exception:
-        live_price = entry_price
+        fetched_price = float(latest_quote[symbol].ask_price) if side == OrderSide.BUY else float(latest_quote[symbol].bid_price)
+        if fetched_price > 0:
+            live_price = fetched_price
+    except Exception as e:
+        print(f"[{symbol}] Dynamic quote lookup failed ({e}). Using bar entry price (${entry_price}).")
 
-    # Enforce strict Alpaca validation relative to live execution price
+    # 2. Safety Adjustments relative to valid live execution price
     if side == OrderSide.BUY and stop_loss_price >= live_price:
-        stop_loss_price = round(live_price - 0.10, 2)
+        stop_loss_price = round(max(0.01, live_price - 0.10), 2)
     elif side == OrderSide.SELL and stop_loss_price <= live_price:
         stop_loss_price = round(live_price + 0.10, 2)
+
+    # 3. Guardrail: Hard validation check prior to submission
+    if stop_loss_price <= 0 or take_profit_price <= 0:
+        print(f"[{symbol}] Aborted order placement: Invalid SL/TP calculated (SL: ${stop_loss_price}, TP: ${take_profit_price}).")
+        return
 
     order_data = MarketOrderRequest(
         symbol=symbol,
