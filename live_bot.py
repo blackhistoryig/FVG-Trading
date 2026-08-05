@@ -11,7 +11,7 @@ from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import MarketOrderRequest, TakeProfitRequest, StopLossRequest
 from alpaca.trading.enums import OrderSide, TimeInForce, OrderClass
 from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import StockBarsRequest
+from alpaca.data.requests import StockBarsRequest, StockLatestQuoteRequest
 from alpaca.data.timeframe import TimeFrame
 from alpaca.data.enums import DataFeed
 
@@ -315,11 +315,19 @@ def check_for_fvg_batch(symbols: list):
         return []
 
 def execute_bracket_order(symbol: str, side: OrderSide, qty: int, entry_price: float, stop_loss_price: float, take_profit_price: float):
-    # Safety Check: Enforce strict Alpaca Stop Loss offset validation
-    if side == OrderSide.BUY and stop_loss_price >= entry_price:
-        stop_loss_price = round(entry_price - 0.05, 2)
-    elif side == OrderSide.SELL and stop_loss_price <= entry_price:
-        stop_loss_price = round(entry_price + 0.05, 2)
+    # Dynamic Live Quote Verification to prevent Alpaca offset rejection
+    try:
+        latest_quote_req = StockLatestQuoteRequest(symbol_or_symbols=symbol, feed=DataFeed.IEX)
+        latest_quote = data_client.get_stock_latest_quote(latest_quote_req)
+        live_price = float(latest_quote[symbol].ask_price) if side == OrderSide.BUY else float(latest_quote[symbol].bid_price)
+    except Exception:
+        live_price = entry_price
+
+    # Enforce strict Alpaca validation relative to live execution price
+    if side == OrderSide.BUY and stop_loss_price >= live_price:
+        stop_loss_price = round(live_price - 0.10, 2)
+    elif side == OrderSide.SELL and stop_loss_price <= live_price:
+        stop_loss_price = round(live_price + 0.10, 2)
 
     order_data = MarketOrderRequest(
         symbol=symbol,
