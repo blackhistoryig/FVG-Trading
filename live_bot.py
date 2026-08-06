@@ -315,7 +315,7 @@ def check_for_fvg_batch(symbols: list):
         return []
 
 def execute_bracket_order(symbol: str, side: OrderSide, qty: int, entry_price: float, stop_loss_price: float, take_profit_price: float):
-    # 1. Fetch live quote safely (falling back to entry_price if bid/ask is zero or unpopulated)
+    # 1. Fetch live quote safely
     live_price = entry_price
     try:
         latest_quote_req = StockLatestQuoteRequest(symbol_or_symbols=symbol, feed=DataFeed.IEX)
@@ -326,13 +326,18 @@ def execute_bracket_order(symbol: str, side: OrderSide, qty: int, entry_price: f
     except Exception as e:
         print(f"[{symbol}] Dynamic quote lookup failed ({e}). Using bar entry price (${entry_price}).")
 
-    # 2. Safety Adjustments relative to valid live execution price
-    if side == OrderSide.BUY and stop_loss_price >= live_price:
-        stop_loss_price = round(max(0.01, live_price - 0.10), 2)
-    elif side == OrderSide.SELL and stop_loss_price <= live_price:
-        stop_loss_price = round(live_price + 0.10, 2)
+    # 2. Enforce minimum $0.15 buffer to absorb execution latency/slippage
+    MIN_BUFFER = 0.15
+    if side == OrderSide.BUY:
+        # Stop loss must be AT LEAST $0.15 below live execution price
+        if stop_loss_price > (live_price - MIN_BUFFER):
+            stop_loss_price = round(max(0.01, live_price - MIN_BUFFER), 2)
+    elif side == OrderSide.SELL:
+        # Stop loss must be AT LEAST $0.15 above live execution price
+        if stop_loss_price < (live_price + MIN_BUFFER):
+            stop_loss_price = round(live_price + MIN_BUFFER, 2)
 
-    # 3. Guardrail: Hard validation check prior to submission
+    # 3. Guardrail validation check prior to submission
     if stop_loss_price <= 0 or take_profit_price <= 0:
         print(f"[{symbol}] Aborted order placement: Invalid SL/TP calculated (SL: ${stop_loss_price}, TP: ${take_profit_price}).")
         return
@@ -352,6 +357,7 @@ def execute_bracket_order(symbol: str, side: OrderSide, qty: int, entry_price: f
         print(f"Successfully placed bracket order for {symbol} ({qty} shares): ID {order.id}")
     except Exception as e:
         print(f"Failed to place order for {symbol}: {e}")
+
 
 # ------------------------------------------------------------------------------
 # 6. MAIN TRADING LOOP
