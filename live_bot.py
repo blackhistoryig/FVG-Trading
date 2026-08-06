@@ -54,18 +54,21 @@ trading_client = TradingClient(API_KEY, SECRET_KEY, paper=True)
 data_client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
 
 # ------------------------------------------------------------------------------
-# 3. CONFIGURATION & RISK CONSTANTS
+# 3. CONFIGURATION & RISK CONSTANTS (ORIGINAL BACKTESTED PARAMETERS)
 # ------------------------------------------------------------------------------
 SYMBOLS = ["QQQ", "NVDA", "SPY", "AAPL", "TSLA", "SMH", "IWM"]
 MAX_POSITIONS = 2           
 RISK_REWARD_RATIO = 2.0     
 CHECK_INTERVAL_SECONDS = 60 
 
+# Original Timeframe & Gap Rules
+SCANNER_TIMEFRAME = TimeFrame.Minute15  # Restored to Original 15-Minute Structural Bars
+MIN_GAP_SIZE = 0.15                     # Minimum $0.15 FVG gap width
+
 # Professional Risk Management Controls
 RISK_PER_TRADE_PCT = 0.01       # Risk 1% of account equity per trade
 MAX_POSITION_ALLOCATION = 0.25  # Max 25% of account equity invested in any single stock
 DAILY_MAX_LOSS_PCT = 0.03       # 3% Daily circuit breaker shutdown
-MIN_GAP_SIZE = 0.15             # Minimum $0.15 gap width to avoid bid-ask noise
 
 EST = pytz.timezone("America/New_York")
 
@@ -105,7 +108,7 @@ def load_fomc_calendar():
             
         print(f"[FOMC CALENDAR] Active Fed announcement dates loaded: {sorted(list(FOMC_MEETING_DATES))}")
     except Exception as e:
-        print(f"[FOMC CALENDAR] Could not reach Fed endpoint ({e}). Utilizing fallback 2026 schedule.")
+        print(f"[FOMC CALENDAR] Could not reach Fed endpoint ({e}). Utilizing fallback schedule.")
         FOMC_MEETING_DATES = STATIC_2026_FOMC_DATES
 
 def check_and_reset_daily_state():
@@ -148,7 +151,7 @@ def is_circuit_breaker_tripped() -> bool:
         if DAILY_START_EQUITY and DAILY_START_EQUITY > 0:
             loss_pct = (current_equity - DAILY_START_EQUITY) / DAILY_START_EQUITY
             if loss_pct <= -DAILY_MAX_LOSS_PCT:
-                print(f"[CIRCUIT BREAKER TRIPPED] Loss of {loss_pct*100:.2f}% exceeds max allowed (-{DAILY_MAX_LOSS_PCT*100}%). Halting trading for today.")
+                print(f"[CIRCUIT BREAKER TRIPPED] Loss of {loss_pct*100:.2f}% exceeds max allowed (-{DAILY_MAX_LOSS_PCT*100}%). Halting trading today.")
                 close_all_positions_and_orders()
                 CIRCUIT_BREAKER_TRIPPED = True
                 return True
@@ -220,17 +223,17 @@ def get_open_position_count() -> int:
         return 0
 
 # ------------------------------------------------------------------------------
-# 5. CORE BATCH FVG SCANNER (With Gap Size Filter)
+# 5. CORE 15-MINUTE FVG SCANNER
 # ------------------------------------------------------------------------------
 def check_for_fvg_batch(symbols: list):
     signals = []
     try:
         end_time = datetime.now(EST)
-        start_time = end_time - timedelta(minutes=60)
+        start_time = end_time - timedelta(hours=6)
         
         request_params = StockBarsRequest(
             symbol_or_symbols=symbols,
-            timeframe=TimeFrame.Minute,
+            timeframe=SCANNER_TIMEFRAME,  # 15-Minute Timeframe
             start=start_time,
             end=end_time,
             feed=DataFeed.IEX
@@ -274,7 +277,7 @@ def check_for_fvg_batch(symbols: list):
                         take_profit = round(current_price + (risk_per_share * RISK_REWARD_RATIO), 2)
                         signals.append({
                             "symbol": symbol,
-                            "type": "BULLISH_FVG",
+                            "type": "BULLISH_FVG (15m)",
                             "side": OrderSide.BUY,
                             "entry": current_price,
                             "stop_loss": stop_loss,
@@ -296,7 +299,7 @@ def check_for_fvg_batch(symbols: list):
                         take_profit = round(current_price - (risk_per_share * RISK_REWARD_RATIO), 2)
                         signals.append({
                             "symbol": symbol,
-                            "type": "BEARISH_FVG",
+                            "type": "BEARISH_FVG (15m)",
                             "side": OrderSide.SELL,
                             "entry": current_price,
                             "stop_loss": stop_loss,
@@ -326,15 +329,13 @@ def execute_bracket_order(symbol: str, side: OrderSide, qty: int, entry_price: f
     except Exception as e:
         print(f"[{symbol}] Dynamic quote lookup failed ({e}). Using bar entry price (${entry_price}).")
 
-    # 2. Enforce minimum $0.15 buffer to absorb execution latency/slippage
+    # 2. Safety buffer relative to live execution price to prevent Alpaca rejection
     MIN_BUFFER = 0.15
     if side == OrderSide.BUY:
-        # Stop loss must be AT LEAST $0.15 below live execution price
-        if stop_loss_price > (live_price - MIN_BUFFER):
+        if stop_loss_price >= live_price:
             stop_loss_price = round(max(0.01, live_price - MIN_BUFFER), 2)
     elif side == OrderSide.SELL:
-        # Stop loss must be AT LEAST $0.15 above live execution price
-        if stop_loss_price < (live_price + MIN_BUFFER):
+        if stop_loss_price <= live_price:
             stop_loss_price = round(live_price + MIN_BUFFER, 2)
 
     # 3. Guardrail validation check prior to submission
@@ -358,12 +359,11 @@ def execute_bracket_order(symbol: str, side: OrderSide, qty: int, entry_price: f
     except Exception as e:
         print(f"Failed to place order for {symbol}: {e}")
 
-
 # ------------------------------------------------------------------------------
 # 6. MAIN TRADING LOOP
 # ------------------------------------------------------------------------------
 def run_bot():
-    print("Starting FVG Trading Engine loop...")
+    print("Starting 15-Minute FVG Engine loop...")
     load_fomc_calendar()
     
     while True:
@@ -403,11 +403,11 @@ def run_bot():
                 continue
 
             # 6. Execute Scans
-            print(f"[{now_est.strftime('%H:%M:%S EST')}] Scanning {len(SYMBOLS)} symbols for FVG setups...")
+            print(f"[{now_est.strftime('%H:%M:%S EST')}] Scanning {len(SYMBOLS)} symbols on 15m timeframe...")
             signals = check_for_fvg_batch(SYMBOLS)
             
             if not signals:
-                print(f"[{now_est.strftime('%H:%M:%S EST')}] Scan complete. No active FVG signals.")
+                print(f"[{now_est.strftime('%H:%M:%S EST')}] Scan complete. No active 15m signals.")
             else:
                 for signal in signals:
                     print(f"[{now_est.strftime('%H:%M:%S EST')}] {signal['type']} detected on {signal['symbol']}!")
