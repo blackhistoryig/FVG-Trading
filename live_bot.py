@@ -12,7 +12,7 @@ from alpaca.trading.requests import MarketOrderRequest, TakeProfitRequest, StopL
 from alpaca.trading.enums import OrderSide, TimeInForce, OrderClass
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest, StockLatestQuoteRequest
-from alpaca.data.timeframe import TimeFrame
+from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from alpaca.data.enums import DataFeed
 
 # ------------------------------------------------------------------------------
@@ -54,15 +54,15 @@ trading_client = TradingClient(API_KEY, SECRET_KEY, paper=True)
 data_client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
 
 # ------------------------------------------------------------------------------
-# 3. CONFIGURATION & RISK CONSTANTS (ORIGINAL BACKTESTED PARAMETERS)
+# 3. CONFIGURATION & RISK CONSTANTS (CORRECTED 15-MINUTE TIMEFRAME)
 # ------------------------------------------------------------------------------
 SYMBOLS = ["QQQ", "NVDA", "SPY", "AAPL", "TSLA", "SMH", "IWM"]
 MAX_POSITIONS = 2           
 RISK_REWARD_RATIO = 2.0     
 CHECK_INTERVAL_SECONDS = 60 
 
-# Original Timeframe & Gap Rules
-SCANNER_TIMEFRAME = TimeFrame.Minute15  # Restored to Original 15-Minute Structural Bars
+# Correct Alpaca SDK syntax for 15-Minute Timeframe:
+SCANNER_TIMEFRAME = TimeFrame(15, TimeFrameUnit.Minute)
 MIN_GAP_SIZE = 0.15                     # Minimum $0.15 FVG gap width
 
 # Professional Risk Management Controls
