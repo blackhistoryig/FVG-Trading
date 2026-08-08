@@ -59,7 +59,7 @@ data_client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
 SYMBOLS = ["QQQ", "NVDA", "SPY", "AAPL", "TSLA", "SMH", "IWM"]
 MAX_POSITIONS = 2           
 RISK_REWARD_RATIO = 2.0     
-CHECK_INTERVAL_SECONDS = 60 
+CHECK_INTERVAL_SECONDS = 300  # 5-minute scans; matches 15m bar cadence, was 60s
 
 # Correct Alpaca SDK syntax for 15-Minute Timeframe:
 SCANNER_TIMEFRAME = TimeFrame(15, TimeFrameUnit.Minute)
@@ -77,6 +77,11 @@ DAILY_START_EQUITY = None
 CIRCUIT_BREAKER_TRIPPED = False
 CURRENT_DAY = None
 FOMC_MEETING_DATES = set()
+
+# Per-symbol FVG de-duplication + post-trade cooldown
+LAST_SIGNAL_FINGERPRINT = {}   # {symbol: (direction, gap_level)}
+LAST_TRADE_TIME = {}          # {symbol: datetime of last executed trade}
+COOLDOWN_MINUTES = 15         # Minimum wait before a symbol can re-trade
 
 # Backup Static 2026 FOMC Announcement Dates (YYYY-MM-DD)
 STATIC_2026_FOMC_DATES = {
@@ -225,6 +230,28 @@ def get_open_position_count() -> int:
 # ------------------------------------------------------------------------------
 # 5. CORE 15-MINUTE FVG SCANNER
 # ------------------------------------------------------------------------------
+
+def is_duplicate_or_cooling_down(symbol: str, direction: str, gap_level: float) -> bool:
+    """Blocks re-entry on the exact same FVG (same gap price + direction) and enforces
+    a minimum cooldown window after any trade on that symbol, to prevent the bot from
+    immediately re-trading a level it just got stopped out of."""
+    now = datetime.now(EST)
+
+    last_trade_dt = LAST_TRADE_TIME.get(symbol)
+    if last_trade_dt and (now - last_trade_dt).total_seconds() < COOLDOWN_MINUTES * 60:
+        return True
+
+    fingerprint = (direction, gap_level)
+    if LAST_SIGNAL_FINGERPRINT.get(symbol) == fingerprint:
+        return True
+
+    return False
+
+def record_trade_execution(symbol: str, direction: str, gap_level: float):
+    """Call immediately after a successful order submission to arm the cooldown/dedup state."""
+    LAST_SIGNAL_FINGERPRINT[symbol] = (direction, gap_level)
+    LAST_TRADE_TIME[symbol] = datetime.now(EST)
+
 def check_for_fvg_batch(symbols: list):
     signals = []
     try:
@@ -268,9 +295,13 @@ def check_for_fvg_batch(symbols: list):
                     gap_size = c3['low'] - c1['high']
                     if gap_size < MIN_GAP_SIZE:
                         continue
+
+                    gap_level = round(c1['high'], 2)
+                    if is_duplicate_or_cooling_down(symbol, "BULLISH", gap_level):
+                        continue
                         
                     current_price = c3['close']
-                    stop_loss = round(c1['high'], 2)
+                    stop_loss = gap_level
                     risk_per_share = current_price - stop_loss
                     
                     if risk_per_share > 0:
@@ -282,7 +313,9 @@ def check_for_fvg_batch(symbols: list):
                             "entry": current_price,
                             "stop_loss": stop_loss,
                             "take_profit": take_profit,
-                            "risk_per_share": risk_per_share
+                            "risk_per_share": risk_per_share,
+                            "direction": "BULLISH",
+                            "gap_level": gap_level
                         })
 
                 # Bearish FVG (c1.low > c3.high)
@@ -291,8 +324,12 @@ def check_for_fvg_batch(symbols: list):
                     if gap_size < MIN_GAP_SIZE:
                         continue
 
+                    gap_level = round(c1['low'], 2)
+                    if is_duplicate_or_cooling_down(symbol, "BEARISH", gap_level):
+                        continue
+
                     current_price = c3['close']
-                    stop_loss = round(c1['low'], 2)
+                    stop_loss = gap_level
                     risk_per_share = stop_loss - current_price
                     
                     if risk_per_share > 0:
@@ -304,7 +341,9 @@ def check_for_fvg_batch(symbols: list):
                             "entry": current_price,
                             "stop_loss": stop_loss,
                             "take_profit": take_profit,
-                            "risk_per_share": risk_per_share
+                            "risk_per_share": risk_per_share,
+                            "direction": "BEARISH",
+                            "gap_level": gap_level
                         })
 
             except Exception as inner_e:
@@ -426,6 +465,9 @@ def run_bot():
                         stop_loss_price=signal['stop_loss'],
                         take_profit_price=signal['take_profit']
                     )
+
+                    # Arm cooldown + fingerprint so we don't immediately re-trade this same gap
+                    record_trade_execution(signal['symbol'], signal['direction'], signal['gap_level'])
 
             time.sleep(CHECK_INTERVAL_SECONDS)
 
