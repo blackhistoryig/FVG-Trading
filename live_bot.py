@@ -2,7 +2,6 @@ import os
 import time
 import threading
 import json
-import urllib.request
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime, timedelta
 import pytz
@@ -83,7 +82,7 @@ LAST_SIGNAL_FINGERPRINT = {}   # {symbol: (direction, gap_level)}
 LAST_TRADE_TIME = {}          # {symbol: datetime of last executed trade}
 COOLDOWN_MINUTES = 15         # Minimum wait before a symbol can re-trade
 
-# Backup Static 2026 FOMC Announcement Dates (YYYY-MM-DD)
+# Static 2026 FOMC Announcement Dates (YYYY-MM-DD) -- authoritative source of truth
 STATIC_2026_FOMC_DATES = {
     "2026-01-28", "2026-03-18", "2026-05-06", "2026-06-17",
     "2026-07-29", "2026-09-16", "2026-10-28", "2026-12-16"
@@ -93,28 +92,23 @@ STATIC_2026_FOMC_DATES = {
 # 4. TIME & RISK MANAGEMENT HELPERS
 # ------------------------------------------------------------------------------
 def load_fomc_calendar():
-    """Fetches Fed meeting days or falls back to standard calendar schedule."""
+    """
+    Loads FOMC meeting dates from the static, pre-verified 2026 calendar.
+
+    NOTE: This previously made a live network call to the Federal Reserve's
+    website on every cold start (Render's free tier resets in-memory globals
+    like CURRENT_DAY on every spin-down/spin-up cycle, so this ran far more
+    often than once per day). That fetch's own matching logic could only ever
+    confirm dates already present in STATIC_2026_FOMC_DATES, or silently fall
+    back to that exact same set on any mismatch or failure -- so it never
+    actually surfaced new information. Removed the network dependency
+    entirely: this now loads instantly with zero I/O, eliminating a real
+    cold-boot latency/failure point for no loss of functionality. Update
+    STATIC_2026_FOMC_DATES directly if the Fed calendar changes.
+    """
     global FOMC_MEETING_DATES
-    try:
-        url = "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=5) as response:
-            html = response.read().decode('utf-8')
-            
-        detected_dates = set()
-        for date_str in STATIC_2026_FOMC_DATES:
-            if date_str in html or datetime.strptime(date_str, "%Y-%m-%d").strftime("%B %d") in html:
-                detected_dates.add(date_str)
-                
-        if detected_dates:
-            FOMC_MEETING_DATES = detected_dates
-        else:
-            FOMC_MEETING_DATES = STATIC_2026_FOMC_DATES
-            
-        print(f"[FOMC CALENDAR] Active Fed announcement dates loaded: {sorted(list(FOMC_MEETING_DATES))}")
-    except Exception as e:
-        print(f"[FOMC CALENDAR] Could not reach Fed endpoint ({e}). Utilizing fallback schedule.")
-        FOMC_MEETING_DATES = STATIC_2026_FOMC_DATES
+    FOMC_MEETING_DATES = STATIC_2026_FOMC_DATES
+    print(f"[FOMC CALENDAR] Loaded static 2026 Fed announcement dates: {sorted(list(FOMC_MEETING_DATES))}")
 
 def check_and_reset_daily_state():
     """Resets equity baseline and re-verifies parameters at start of a new trading day."""
@@ -403,7 +397,6 @@ def execute_bracket_order(symbol: str, side: OrderSide, qty: int, entry_price: f
 # ------------------------------------------------------------------------------
 def run_bot():
     print("Starting 15-Minute FVG Engine loop...")
-    load_fomc_calendar()
     
     while True:
         try:
