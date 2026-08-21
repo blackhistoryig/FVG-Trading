@@ -10,17 +10,14 @@ import pandas as pd
 import numpy as np
 from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import (
-    MarketOrderRequest, TakeProfitRequest, StopLossRequest, ReplaceOrderRequest
+    MarketOrderRequest, TakeProfitRequest, StopLossRequest, ReplaceOrderRequest, GetOrdersRequest
 )
-from alpaca.trading.enums import OrderSide, TimeInForce, OrderClass
+from alpaca.trading.enums import OrderSide, TimeInForce, OrderClass, QueryOrderStatus
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest, StockLatestQuoteRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from alpaca.data.enums import DataFeed
 
-# ------------------------------------------------------------------------------
-# 1. LIGHTWEIGHT HTTP SERVER (For Render & cron-job.org Pings)
-# ------------------------------------------------------------------------------
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         body = b"OK"
@@ -47,18 +44,12 @@ def run_http_server():
     print(f"Health check web server running on port {port}")
     server.serve_forever()
 
-# ------------------------------------------------------------------------------
-# 2. AUTHENTICATION
-# ------------------------------------------------------------------------------
 API_KEY = os.getenv("ALPACA_API_KEY")
 SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
 
 trading_client = TradingClient(API_KEY, SECRET_KEY, paper=True)
 data_client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
 
-# ------------------------------------------------------------------------------
-# 3. CONFIGURATION & RISK CONSTANTS
-# ------------------------------------------------------------------------------
 SYMBOLS = ["QQQ", "NVDA", "SPY", "AAPL", "TSLA", "SMH", "IWM"]
 MAX_POSITIONS = 2
 RISK_REWARD_RATIO = 2.0
@@ -72,15 +63,6 @@ RISK_PER_TRADE_PCT = 0.01
 MAX_POSITION_ALLOCATION = 0.25
 DAILY_MAX_LOSS_PCT = 0.03
 SYMBOL_MAX_LOSS_PCT = 0.015
-
-# REMOVED (thesis-timeout-v2): the momentum/MSS+displacement confirmation gate
-# that used to live here (MSS_SWING_WINDOW, MSS_LOOKBACK_BARS, ATR_PERIOD,
-# ATR_MULTIPLIER, VOL_PERIOD, VOL_MULTIPLIER + compute_mss_and_displacement() +
-# has_momentum_confirmation()) has been stripped out entirely on this branch.
-# It was gating entries on live trades that then got stopped out in 14-34
-# minutes -- well before it could have mattered. Raw FVG detection (gap size
-# only) is the only entry filter now. The timed stagnation/invalidation exit
-# below is the real safety valve for a thesis that stops playing out.
 
 STAGNATION_CHECK_BAR = 24
 STAGNATION_BAND_PCT = 0.30
@@ -418,7 +400,10 @@ def check_for_fvg_batch(symbols: list):
 
 def find_stop_order_id(symbol: str):
     try:
-        orders = trading_client.get_orders(filter={"symbols": [symbol], "status": "all", "nested": True, "limit": 5})
+        request_params = GetOrdersRequest(
+            symbols=[symbol], status=QueryOrderStatus.ALL, nested=True, limit=5
+        )
+        orders = trading_client.get_orders(filter=request_params)
         for o in orders:
             legs = getattr(o, "legs", None) or []
             for leg in legs:
@@ -494,7 +479,10 @@ def reconcile_and_manage_positions():
             try:
                 account = trading_client.get_account()
                 equity = float(account.equity)
-                closed_orders = trading_client.get_orders(filter={"symbols": [symbol], "status": "closed", "limit": 3})
+                closed_request_params = GetOrdersRequest(
+                    symbols=[symbol], status=QueryOrderStatus.CLOSED, limit=3
+                )
+                closed_orders = trading_client.get_orders(filter=closed_request_params)
                 exit_price = None
                 for o in closed_orders:
                     if o.filled_avg_price and str(o.side).lower().endswith(("buy", "sell")):
