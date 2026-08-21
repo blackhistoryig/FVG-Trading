@@ -62,67 +62,38 @@ data_client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
 SYMBOLS = ["QQQ", "NVDA", "SPY", "AAPL", "TSLA", "SMH", "IWM"]
 MAX_POSITIONS = 2
 RISK_REWARD_RATIO = 2.0
-CHECK_INTERVAL_SECONDS = 300  # 5-minute scans; matches 15m bar cadence
+CHECK_INTERVAL_SECONDS = 300
 
 SCANNER_TIMEFRAME = TimeFrame(15, TimeFrameUnit.Minute)
 BAR_MINUTES = 15
 MIN_GAP_SIZE = 0.15
 
-# Professional Risk Management Controls
 RISK_PER_TRADE_PCT = 0.01
 MAX_POSITION_ALLOCATION = 0.25
-DAILY_MAX_LOSS_PCT = 0.03           # account-wide circuit breaker
-SYMBOL_MAX_LOSS_PCT = 0.015         # NEW: per-symbol circuit breaker (half the account-wide budget)
+DAILY_MAX_LOSS_PCT = 0.03
+SYMBOL_MAX_LOSS_PCT = 0.015
 
-# NEW: Momentum / bias confirmation (ported from the validated backtest engine
-# in fvg_bot.py -- this was NEVER actually wired into the live scanner before.
-# Bullish/bearish FVGs now additionally require:
-#   1) A market-structure-shift (close breaks a recent swing high/low) in the
-#      confirming direction within the lookback window, AND
-#   2) A displacement candle immediately before the gap (range >= ATR x mult,
-#      volume >= rolling average x mult) -- proof real participation drove the move,
-#      not just a thin/illiquid print.
-MSS_SWING_WINDOW = 2
-MSS_LOOKBACK_BARS = 5
-ATR_PERIOD = 14
-ATR_MULTIPLIER = 1.0
-VOL_PERIOD = 20
-VOL_MULTIPLIER = 1.0
+# REMOVED (thesis-timeout-v2): the momentum/MSS+displacement confirmation gate
+# that used to live here (MSS_SWING_WINDOW, MSS_LOOKBACK_BARS, ATR_PERIOD,
+# ATR_MULTIPLIER, VOL_PERIOD, VOL_MULTIPLIER + compute_mss_and_displacement() +
+# has_momentum_confirmation()) has been stripped out entirely on this branch.
+# It was gating entries on live trades that then got stopped out in 14-34
+# minutes -- well before it could have mattered. Raw FVG detection (gap size
+# only) is the only entry filter now. The timed stagnation/invalidation exit
+# below is the real safety valve for a thesis that stops playing out.
 
-# NEW: Three-stack exit config (Layer 1 = existing bracket TP/SL, unchanged and primary)
-STAGNATION_CHECK_BAR = 24     # ~6 hours on 15-min bars
-STAGNATION_BAND_PCT = 0.30    # unrealized P&L must clear 30% of planned risk by then
-MAX_BARS_IN_TRADE = 20        # ~5 hours on 15-min bars; hard cap, always fires before EOD flatten
+STAGNATION_CHECK_BAR = 24
+STAGNATION_BAND_PCT = 0.30
+MAX_BARS_IN_TRADE = 20
 
 EST = pytz.timezone("America/New_York")
 
-# Static 2026 FOMC Announcement Dates (YYYY-MM-DD)
 STATIC_2026_FOMC_DATES = {
     "2026-01-28", "2026-03-18", "2026-05-06", "2026-06-17",
     "2026-07-29", "2026-09-16", "2026-10-28", "2026-12-16"
 }
-# TODO (flagged, not yet built): earnings-date blackout per symbol. FOMC is covered;
-# single-name earnings gap risk (AAPL/NVDA/TSLA) is NOT. Add a static per-symbol
-# earnings calendar the same way STATIC_2026_FOMC_DATES was done, refreshed quarterly.
-
 FOMC_MEETING_DATES = STATIC_2026_FOMC_DATES
 
-# ------------------------------------------------------------------------------
-# 4. STATE PERSISTENCE (NEW)
-# ------------------------------------------------------------------------------
-# WHY THIS MATTERS: Render free-tier has already cold-started/restarted mid-session
-# historically. Pure in-memory globals (DAILY_START_EQUITY, CIRCUIT_BREAKER_TRIPPED,
-# cooldown timestamps, open-position tracking for the new exit stack) were silently
-# wiped on every restart. That's not just an inconvenience -- it was actively
-# corrupting the daily-loss circuit breaker, which re-baselined its equity floor
-# off *current* equity after any restart instead of the true start-of-day equity,
-# quietly giving the bot more room to lose than the 3% budget intended.
-#
-# CAVEAT: SQLite on local disk survives process restarts/crashes (the actual
-# historical failure mode) but NOT a full Render redeploy, which wipes the
-# filesystem. For redeploy-proof durability, either enable Render's persistent
-# disk add-on and point DB_PATH at it, or swap this for a tiny external Postgres/
-# Notion-backed store. SQLite is the right first step and fixes the real bug above.
 DB_PATH = os.getenv("BOT_STATE_DB", "bot_state.db")
 
 def get_db():
@@ -154,7 +125,7 @@ DB = get_db()
 
 def db_get_daily_state(today_str: str):
     row = DB.execute("SELECT start_equity, circuit_breaker_tripped FROM daily_state WHERE day = ?", (today_str,)).fetchone()
-    return row  # None if no row yet today
+    return row
 
 def db_set_daily_state(today_str: str, start_equity: float, tripped: bool):
     DB.execute(
@@ -233,31 +204,20 @@ def db_set_trade_memory(symbol, direction, gap_level):
     )
     DB.commit()
 
-# Global (in-memory mirrors, rehydrated from DB at process start / each new day)
 CURRENT_DAY = None
 DAILY_START_EQUITY = None
 CIRCUIT_BREAKER_TRIPPED = False
 COOLDOWN_MINUTES = 15
 
-# ------------------------------------------------------------------------------
-# 5. TIME & RISK MANAGEMENT HELPERS
-# ------------------------------------------------------------------------------
 def check_and_reset_daily_state():
-    """
-    Resets equity baseline at the start of a new trading day, using persisted
-    state so a mid-day process restart REHYDRATES the existing baseline instead
-    of quietly re-baselining off current (possibly already-drawn-down) equity.
-    """
     global DAILY_START_EQUITY, CIRCUIT_BREAKER_TRIPPED, CURRENT_DAY
     today_str = datetime.now(EST).strftime("%Y-%m-%d")
 
     if CURRENT_DAY == today_str:
-        return  # already initialized this process for today
+        return
 
     existing = db_get_daily_state(today_str)
     if existing is not None:
-        # A prior process already recorded today's baseline (e.g. this is a
-        # restart, not a new day) -- rehydrate instead of overwriting.
         DAILY_START_EQUITY, tripped_int = existing
         CIRCUIT_BREAKER_TRIPPED = bool(tripped_int)
         CURRENT_DAY = today_str
@@ -265,7 +225,6 @@ def check_and_reset_daily_state():
               f"Baseline Equity: ${DAILY_START_EQUITY:,.2f} | Circuit Breaker Tripped: {CIRCUIT_BREAKER_TRIPPED}")
         return
 
-    # Genuinely a new day -- establish a fresh baseline and persist it immediately.
     CURRENT_DAY = today_str
     CIRCUIT_BREAKER_TRIPPED = False
     try:
@@ -352,70 +311,6 @@ def get_open_position_count() -> int:
         print(f"Error fetching positions: {e}")
         return 0
 
-# ------------------------------------------------------------------------------
-# 6. MOMENTUM / BIAS CONFIRMATION (NEW -- ported from fvg_bot.py's validated logic)
-# ------------------------------------------------------------------------------
-def compute_mss_and_displacement(df: pd.DataFrame) -> pd.DataFrame:
-    """Mirrors FvgMssDisplacementStrategy.calculate_indicators from fvg_bot.py
-    so the LIVE scanner uses the same confirmation the backtest was validated on."""
-    df = df.copy()
-    high_low = df['high'] - df['low']
-    high_close = (df['high'] - df['close'].shift(1)).abs()
-    low_close = (df['low'] - df['close'].shift(1)).abs()
-    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-    df['atr'] = tr.rolling(window=ATR_PERIOD).mean()
-    df['candle_range'] = df['high'] - df['low']
-    df['vol_ma'] = df['volume'].rolling(window=VOL_PERIOD).mean()
-
-    df['is_swing_high'] = False
-    df['is_swing_low'] = False
-    w = MSS_SWING_WINDOW
-    for i in range(w, len(df) - w):
-        if df['high'].iloc[i] == df['high'].iloc[i - w: i + w + 1].max():
-            df.at[df.index[i], 'is_swing_high'] = True
-        if df['low'].iloc[i] == df['low'].iloc[i - w: i + w + 1].min():
-            df.at[df.index[i], 'is_swing_low'] = True
-
-    df['mss_signal'] = None
-    active_sh, active_sl = None, None
-    for i in range(len(df)):
-        curr_close = df.at[df.index[i], 'close']
-        if df.at[df.index[i], 'is_swing_high']:
-            active_sh = df.at[df.index[i], 'high']
-        if df.at[df.index[i], 'is_swing_low']:
-            active_sl = df.at[df.index[i], 'low']
-        if active_sh is not None and curr_close > active_sh:
-            df.at[df.index[i], 'mss_signal'] = 'BULLISH'
-            active_sh = None
-        elif active_sl is not None and curr_close < active_sl:
-            df.at[df.index[i], 'mss_signal'] = 'BEARISH'
-            active_sl = None
-    return df
-
-def has_momentum_confirmation(df: pd.DataFrame, i: int, direction: str) -> bool:
-    """direction: 'BULLISH' or 'BEARISH'. Requires a displacement candle at c2
-    (the middle of the 3-candle gap) AND a matching MSS signal within the
-    lookback window -- this is the check that was missing from live trading."""
-    c2_idx = df.index[i - 1]
-    atr = df.at[c2_idx, 'atr']
-    vol_ma = df.at[c2_idx, 'vol_ma']
-    if pd.isna(atr) or pd.isna(vol_ma) or atr == 0 or vol_ma == 0:
-        return False
-
-    has_displacement = (
-        df.at[c2_idx, 'candle_range'] >= atr * ATR_MULTIPLIER
-        and df.at[c2_idx, 'volume'] >= vol_ma * VOL_MULTIPLIER
-    )
-    if not has_displacement:
-        return False
-
-    start_loc = max(0, i - MSS_LOOKBACK_BARS)
-    recent_mss = df.iloc[start_loc:i + 1]['mss_signal'].dropna().tolist()
-    return direction in recent_mss
-
-# ------------------------------------------------------------------------------
-# 7. CORE 15-MINUTE FVG SCANNER (now with momentum/bias confirmation)
-# ------------------------------------------------------------------------------
 def is_duplicate_or_cooling_down(symbol: str, direction: str, gap_level: float) -> bool:
     now = datetime.now(EST)
     mem = db_get_trade_memory(symbol)
@@ -451,7 +346,7 @@ def check_for_fvg_batch(symbols: list):
         for symbol in symbols:
             try:
                 if db_is_symbol_suspended(CURRENT_DAY, symbol):
-                    continue  # NEW: per-symbol circuit breaker
+                    continue
 
                 if isinstance(df.index, pd.MultiIndex):
                     if symbol not in df.index.levels[0]:
@@ -460,21 +355,18 @@ def check_for_fvg_batch(symbols: list):
                 else:
                     symbol_df = df
 
-                if len(symbol_df) < max(4, ATR_PERIOD + 2):
-                    continue  # not enough bars for ATR/vol_ma/MSS to be meaningful
+                if len(symbol_df) < 4:
+                    continue
 
                 completed_df = symbol_df.iloc[:-1]
-                indexed_df = compute_mss_and_displacement(completed_df)
 
-                i = len(indexed_df) - 1
-                c1 = indexed_df.iloc[i - 2]
-                c3 = indexed_df.iloc[i]
+                i = len(completed_df) - 1
+                c1 = completed_df.iloc[i - 2]
+                c3 = completed_df.iloc[i]
 
                 if c1['high'] < c3['low']:
                     gap_size = c3['low'] - c1['high']
                     if gap_size < MIN_GAP_SIZE:
-                        continue
-                    if not has_momentum_confirmation(indexed_df, i, 'BULLISH'):
                         continue
 
                     gap_level = round(c1['high'], 2)
@@ -487,7 +379,7 @@ def check_for_fvg_batch(symbols: list):
                     if risk_per_share > 0:
                         take_profit = round(current_price + (risk_per_share * RISK_REWARD_RATIO), 2)
                         signals.append({
-                            "symbol": symbol, "type": "BULLISH_FVG (15m, MSS+displacement confirmed)",
+                            "symbol": symbol, "type": "BULLISH_FVG (15m, raw gap)",
                             "side": OrderSide.BUY, "entry": current_price, "stop_loss": stop_loss,
                             "take_profit": take_profit, "risk_per_share": risk_per_share,
                             "direction": "BULLISH", "gap_level": gap_level
@@ -496,8 +388,6 @@ def check_for_fvg_batch(symbols: list):
                 elif c1['low'] > c3['high']:
                     gap_size = c1['low'] - c3['high']
                     if gap_size < MIN_GAP_SIZE:
-                        continue
-                    if not has_momentum_confirmation(indexed_df, i, 'BEARISH'):
                         continue
 
                     gap_level = round(c1['low'], 2)
@@ -510,7 +400,7 @@ def check_for_fvg_batch(symbols: list):
                     if risk_per_share > 0:
                         take_profit = round(current_price - (risk_per_share * RISK_REWARD_RATIO), 2)
                         signals.append({
-                            "symbol": symbol, "type": "BEARISH_FVG (15m, MSS+displacement confirmed)",
+                            "symbol": symbol, "type": "BEARISH_FVG (15m, raw gap)",
                             "side": OrderSide.SELL, "entry": current_price, "stop_loss": stop_loss,
                             "take_profit": take_profit, "risk_per_share": risk_per_share,
                             "direction": "BEARISH", "gap_level": gap_level
@@ -527,8 +417,6 @@ def check_for_fvg_batch(symbols: list):
         return []
 
 def find_stop_order_id(symbol: str):
-    """Looks up the bracket's stop-loss leg order ID for a live position, needed
-    to later replace it with a breakeven stop (Layer 2 of the exit stack)."""
     try:
         orders = trading_client.get_orders(filter={"symbols": [symbol], "status": "all", "nested": True, "limit": 5})
         for o in orders:
@@ -573,7 +461,7 @@ def execute_bracket_order(symbol: str, side: OrderSide, qty: int, entry_price: f
     try:
         order = trading_client.submit_order(order_data)
         print(f"Successfully placed bracket order for {symbol} ({qty} shares): ID {order.id}")
-        time.sleep(2)  # give Alpaca a moment to register the bracket legs
+        time.sleep(2)
         stop_order_id = find_stop_order_id(symbol)
         db_save_position(
             symbol=symbol, side=("long" if side == OrderSide.BUY else "short"),
@@ -583,14 +471,6 @@ def execute_bracket_order(symbol: str, side: OrderSide, qty: int, entry_price: f
     except Exception as e:
         print(f"Failed to place order for {symbol}: {e}")
 
-# ------------------------------------------------------------------------------
-# 8. THREE-STACK EXIT MANAGEMENT (NEW)
-#    Layer 1: existing bracket TP/SL -- primary, untouched, checked implicitly
-#             (if Alpaca already closed the position, it just won't appear in
-#             get_all_positions() anymore -- handled in the reconciliation below).
-#    Layer 2: stagnation -> ratchet stop to breakeven once, no forced exit.
-#    Layer 3: hard bar-count cap -> force flatten, ahead of the 3:55pm EOD flatten.
-# ------------------------------------------------------------------------------
 def reconcile_and_manage_positions():
     tracked = db_get_tracked_positions()
     try:
@@ -599,8 +479,6 @@ def reconcile_and_manage_positions():
         print(f"Error fetching live positions for reconciliation: {e}")
         return
 
-    # New positions Alpaca has that we aren't tracking yet (e.g. filled just now,
-    # or the process restarted after execute_bracket_order already ran) -> adopt them.
     for symbol, pos in live_positions.items():
         if symbol not in tracked:
             side = "long" if float(pos.qty) > 0 else "short"
@@ -611,8 +489,6 @@ def reconcile_and_manage_positions():
             )
             tracked = db_get_tracked_positions()
 
-    # Positions we were tracking that Alpaca no longer shows -> closed via TP/SL/EOD.
-    # Reconcile realized P&L into the per-symbol circuit breaker.
     for symbol, info in list(tracked.items()):
         if symbol not in live_positions:
             try:
@@ -633,11 +509,10 @@ def reconcile_and_manage_positions():
                 print(f"[RECONCILE] Could not compute realized P&L for {symbol}: {e}")
             db_remove_position(symbol)
 
-    # Layer 2 / Layer 3 checks on everything still genuinely open.
     tracked = db_get_tracked_positions()
     for symbol, info in tracked.items():
         if info["stop_loss"] is None or info["take_profit"] is None:
-            continue  # adopted position with unknown bracket levels; skip exit-stack math
+            continue
 
         bars_since_entry = int((datetime.now(EST) - info["entry_time"]).total_seconds() // (BAR_MINUTES * 60))
         try:
@@ -679,11 +554,8 @@ def reconcile_and_manage_positions():
             except Exception as e:
                 print(f"[EXIT STACK] Error tightening stop for {symbol}: {e}")
 
-# ------------------------------------------------------------------------------
-# 9. MAIN TRADING LOOP
-# ------------------------------------------------------------------------------
 def run_bot():
-    print("Starting 15-Minute FVG Engine loop...")
+    print("Starting 15-Minute FVG Engine loop (thesis-timeout-v2: no momentum filter, timed stagnation exit)...")
     while True:
         try:
             now_est = datetime.now(EST)
@@ -699,7 +571,6 @@ def run_bot():
                 time.sleep(CHECK_INTERVAL_SECONDS)
                 continue
 
-            # Exit-stack + reconciliation runs every cycle regardless of new-entry gating
             reconcile_and_manage_positions()
 
             if is_market_close_approaching():
@@ -718,11 +589,11 @@ def run_bot():
                 time.sleep(CHECK_INTERVAL_SECONDS)
                 continue
 
-            print(f"[{now_est.strftime('%H:%M:%S EST')}] Scanning {len(SYMBOLS)} symbols on 15m timeframe (momentum-confirmed)...")
+            print(f"[{now_est.strftime('%H:%M:%S EST')}] Scanning {len(SYMBOLS)} symbols on 15m timeframe (raw FVG, no momentum filter)...")
             signals = check_for_fvg_batch(SYMBOLS)
 
             if not signals:
-                print(f"[{now_est.strftime('%H:%M:%S EST')}] Scan complete. No confirmed 15m signals.")
+                print(f"[{now_est.strftime('%H:%M:%S EST')}] Scan complete. No signals.")
             else:
                 for signal in signals:
                     print(f"[{now_est.strftime('%H:%M:%S EST')}] {signal['type']} detected on {signal['symbol']}!")
