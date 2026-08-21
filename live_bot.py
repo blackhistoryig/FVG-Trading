@@ -473,7 +473,7 @@ def find_stop_order_id(symbol: str):
             legs = getattr(o, "legs", None) or []
             for leg in legs:
                 if getattr(leg, "type", None) and "stop" in str(leg.type).lower() and leg.status not in ("filled", "canceled"):
-                    return leg.id
+                    return str(leg.id)
     except Exception as e:
         print(f"[{symbol}] Could not resolve stop order id: {e}")
     return None
