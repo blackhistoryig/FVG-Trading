@@ -71,7 +71,7 @@ ATR_MULTIPLIER = 1.0
 VOL_PERIOD = 20
 VOL_MULTIPLIER = 1.0
 
-STAGNATION_CHECK_BAR = 24
+STAGNATION_CHECK_BAR = 12
 STAGNATION_BAND_PCT = 0.30
 MAX_BARS_IN_TRADE = 20
 
@@ -196,7 +196,7 @@ def db_set_trade_memory(symbol, direction, gap_level):
 CURRENT_DAY = None
 DAILY_START_EQUITY = None
 CIRCUIT_BREAKER_TRIPPED = False
-COOLDOWN_MINUTES = 15
+COOLDOWN_MINUTES = 45
 
 def check_and_reset_daily_state():
     global DAILY_START_EQUITY, CIRCUIT_BREAKER_TRIPPED, CURRENT_DAY
@@ -369,6 +369,7 @@ def record_trade_execution(symbol: str, direction: str, gap_level: float):
 
 def check_for_fvg_batch(symbols: list):
     signals = []
+    tracked_open = db_get_tracked_positions()
     try:
         end_time = datetime.now(EST)
         start_time = end_time - timedelta(hours=6)
@@ -387,6 +388,9 @@ def check_for_fvg_batch(symbols: list):
 
         for symbol in symbols:
             try:
+                if symbol in tracked_open:
+                    continue
+
                 if db_is_symbol_suspended(CURRENT_DAY, symbol):
                     continue
 
