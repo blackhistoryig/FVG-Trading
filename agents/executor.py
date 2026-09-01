@@ -207,7 +207,7 @@ def _run_cli(args: list[str], input_json: Optional[dict] = None, timeout: int = 
 
 def fetch_option_chain(symbol: str) -> dict:
     """`alpaca data option chain --underlying-symbol <symbol>`"""
-    return _run_cli(["data", "option", "chain", "--underlying-symbol", symbol])
+    return _run_cli(["data", "option", "chain", "--underlying-symbol", symbol, "--quiet"])
 
 
 # ---------------------------------------------------------------------------
