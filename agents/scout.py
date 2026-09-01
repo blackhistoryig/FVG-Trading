@@ -78,12 +78,47 @@ def _get_groq_client() -> Groq:
 def _build_user_message(raw_signal: dict[str, Any]) -> str:
     """Serialize the raw FVG signal dict for the LLM. Kept as a separate
     function so the prompt-assembly logic is easy to unit test / tweak
-    without touching the API-calling logic."""
+    without touching the API-calling logic.
+
+    NOTE (2026-09-01): openai/gpt-oss-120b was observed inventing its
+    own field names (suggested_stop_loss, suggested_max_hold_time
+    instead of the schema's recommended_max_loss_usd,
+    recommended_max_hold_hours) and putting a free-text description
+    into suggested_strategy instead of the exact enum value. Spelling
+    out every required key and the exact enum strings here (rather than
+    relying on the system prompt alone) fixes this -- same root cause
+    and same fix pattern as risk_guardian.py's earlier bug."""
+    signal_id = raw_signal.get("signal_id", "UNKNOWN")
     return (
         "Raw FVG signal from the deterministic core (JSON):\n\n"
         f"{json.dumps(raw_signal, default=str, indent=2)}\n\n"
-        "Respond with a single JSON object matching the ScoutOutput schema. "
-        "No markdown, no code fences, no commentary outside the JSON object."
+        "Respond with a single JSON object with EXACTLY these keys (use these "
+        "EXACT key names, not synonyms):\n"
+        f'  "signal_id": copy this exact string: "{signal_id}"\n'
+        '  "symbol": string, copy from the input signal\n'
+        '  "direction": must be EXACTLY "BUY" or "SELL", copy from the input signal\n'
+        '  "underlying_price": number, copy from the input signal\n'
+        '  "fvg_context": object, copy the fvg_context object from the input signal '
+        "unchanged\n"
+        '  "thesis": string, max 500 characters, 2-3 sentence plain-language rationale\n'
+        '  "market_context": string, max 300 characters\n'
+        '  "confidence_score": number between 0.0 and 1.0\n'
+        '  "suggested_strategy": must be EXACTLY "debit_call_spread" or '
+        '"debit_put_spread" -- a short enum code, NOT a sentence or description '
+        '(e.g. NOT "Long SPY call spread targeting 452" -- just the exact code '
+        '"debit_call_spread")\n'
+        '  "suggested_expiration_bias": string, e.g. "nearest_liquid_weekly" '
+        "(optional, has a default)\n"
+        '  "risk_flags": array of short strings, e.g. ["earnings_this_week"] '
+        "(optional, can be empty array)\n"
+        '  "recommended_max_loss_usd": number > 0 -- use THIS EXACT key name, '
+        'NOT "suggested_stop_loss" or any other name\n'
+        '  "recommended_max_hold_hours": number > 0, in HOURS -- use THIS EXACT '
+        'key name, NOT "suggested_max_hold_time" or any other name, and do not '
+        'use a string like "48h", use a plain number like 48\n\n'
+        "No markdown, no code fences, no commentary outside the JSON object. "
+        "Do not add extra keys beyond what is listed above. Use the exact key "
+        "names given -- do not invent synonyms."
     )
 
 
@@ -160,6 +195,10 @@ def run_scout(
                     "Your previous response did not parse as valid JSON matching "
                     "the ScoutOutput schema. Error: "
                     f"{first_err}\n\n"
+                    'Remember: "suggested_strategy" must be EXACTLY "debit_call_spread" '
+                    'or "debit_put_spread" (a short code, not a sentence). Use the exact '
+                    'key names "recommended_max_loss_usd" and "recommended_max_hold_hours" '
+                    "(plain numbers, not strings like \"48h\"). "
                     "Return ONLY a single valid JSON object matching ScoutOutput. "
                     "No markdown, no code fences, no explanation text."
                 ),
