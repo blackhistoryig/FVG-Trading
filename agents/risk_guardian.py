@@ -21,7 +21,7 @@ from typing import Optional, Union
 
 from pydantic import ValidationError
 
-from agents.agent_schemas import (
+from agent_schemas import (
     RiskGuardianOutput,
     ScoutOutput,
     RiskDecision,
