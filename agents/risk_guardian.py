@@ -130,11 +130,29 @@ def _build_user_message(scout_output: ScoutOutput, ctx: AccountRiskContext) -> s
             "proposed_trade_cost_usd": ctx.proposed_trade_cost_usd,
         },
     }
+    # NOTE (2026-09-01): openai/gpt-oss-120b was observed inventing a
+    # plausible-but-wrong enum value ("MODIFY" instead of the schema's
+    # "APPROVE_MODIFIED") and omitting signal_id entirely, causing a
+    # double validation failure -> correct fail-closed VETO, but wasted
+    # the LLM call. Spelling out the exact required keys/enum values
+    # here (rather than relying on the system prompt alone) fixes this.
     return (
         "Scout proposal and current account risk context (JSON):\n\n"
         f"{json.dumps(payload, indent=2)}\n\n"
-        "Respond with a single JSON object matching the RiskGuardianOutput schema. "
-        "No markdown, no code fences, no commentary outside the JSON object."
+        "Respond with a single JSON object with EXACTLY these keys:\n"
+        f'  "signal_id": copy this exact string: "{scout_output.signal_id}"\n'
+        '  "decision": must be EXACTLY one of "APPROVE", "APPROVE_MODIFIED", or "VETO" '
+        '(do not use any other word, e.g. NOT "MODIFY" or "APPROVED")\n'
+        '  "veto_reason": string, REQUIRED (non-null) only if decision is "VETO", '
+        "otherwise omit or set null\n"
+        '  "risk_rationale": string, max 400 characters, always required\n'
+        '  "position_size_contracts": integer > 0 if decision is "APPROVE" or '
+        '"APPROVE_MODIFIED", else 0\n'
+        '  "final_max_loss_usd": number > 0 if approved, else 0.0\n'
+        '  "final_max_hold_hours": number > 0 if approved, else 0.0\n\n'
+        "No markdown, no code fences, no commentary outside the JSON object. "
+        "The decision field is an enum -- use the exact strings listed above, "
+        "character for character."
     )
 
 
@@ -226,9 +244,11 @@ def run_risk_guardian(
                     "Your previous response did not parse as valid JSON matching "
                     "the RiskGuardianOutput schema. Error: "
                     f"{first_err}\n\n"
-                    "Return ONLY a single valid JSON object matching RiskGuardianOutput. "
-                    "If you intend to VETO, veto_reason is required. "
-                    "No markdown, no code fences, no explanation text."
+                    f'Remember: "signal_id" must be exactly "{scout_output.signal_id}", '
+                    '"decision" must be exactly "APPROVE", "APPROVE_MODIFIED", or "VETO" '
+                    "(not any other word). Return ONLY a single valid JSON object "
+                    "matching RiskGuardianOutput. If you intend to VETO, veto_reason "
+                    "is required. No markdown, no code fences, no explanation text."
                 ),
             }
         )
