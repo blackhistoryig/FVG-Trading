@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class Direction(str, Enum):
@@ -122,6 +122,27 @@ class RiskGuardianOutput(BaseModel):
 
     generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
+    @model_validator(mode="after")
+    def veto_requires_reason(self) -> "RiskGuardianOutput":
+        """Hard-fail if the LLM vetoes without explaining why. This is
+        judge-facing and downstream-logic-facing -- a silent None here
+        is worse than a raised ValueError during parsing."""
+        if self.decision == RiskDecision.VETO and not self.veto_reason:
+            raise ValueError("veto_reason is required when decision is VETO")
+        return self
+
+    @model_validator(mode="after")
+    def approve_requires_sizing(self) -> "RiskGuardianOutput":
+        """If approved (modified or not), there must be a real position
+        size and a real max loss -- zero-by-default should only survive
+        on a VETO."""
+        if self.decision in (RiskDecision.APPROVE, RiskDecision.APPROVE_MODIFIED):
+            if self.position_size_contracts <= 0:
+                raise ValueError("position_size_contracts must be > 0 when approved")
+            if self.final_max_loss_usd <= 0:
+                raise ValueError("final_max_loss_usd must be > 0 when approved")
+        return self
+
 
 SCOUT_SYSTEM_PROMPT = """You are Scout, a market-context analyst for an options overlay on a \
 deterministic FVG (Fair Value Gap / market structure shift) trading signal.
@@ -177,14 +198,28 @@ if __name__ == "__main__":
         recommended_max_hold_hours=18.0,
     )
 
+    # NOTE: final_max_loss_usd (40.0) is now correctly TIGHTER than
+    # Scout's recommendation (45.0), matching the rationale text below.
     example_risk_output = RiskGuardianOutput(
         signal_id=example_scout_output.signal_id,
         decision=RiskDecision.APPROVE_MODIFIED,
-        risk_rationale="Approved with a tighter stop than Scout's suggestion: backtest shows ~8.5% of even correct-direction trades lose >$50, so capping at $50 rather than the requested $45 buffer against normal noise while still cutting the fat tail.",
+        risk_rationale="Approved with a tighter stop than Scout's suggestion: backtest shows ~8.5% of even correct-direction trades lose >$50, so capping at $40 rather than the requested $45 to buffer against normal noise while cutting the fat tail earlier.",
         position_size_contracts=1,
-        final_max_loss_usd=50.0,
+        final_max_loss_usd=40.0,
         final_max_hold_hours=18.0,
     )
 
+    # Sanity check: a VETO without a reason should now raise.
+    try:
+        RiskGuardianOutput(
+            signal_id="TEST-VETO-NO-REASON",
+            decision=RiskDecision.VETO,
+            risk_rationale="This should fail validation.",
+        )
+        raise AssertionError("Expected ValueError for VETO without veto_reason")
+    except ValueError:
+        pass  # expected
+
     print(example_scout_output.model_dump_json(indent=2))
     print(example_risk_output.model_dump_json(indent=2))
+    print("Smoke test passed: schemas valid, VETO-without-reason correctly rejected.")
