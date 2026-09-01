@@ -165,12 +165,17 @@ def _parse_risk_output(raw_text: str) -> RiskGuardianOutput:
 
 def _fail_closed_veto(signal_id: str, reason: str) -> RiskGuardianOutput:
     """Construct a safe, schema-valid VETO when we can't get (or trust)
-    an LLM verdict. Never return an unvalidated or fabricated APPROVE."""
+    an LLM verdict. Never return an unvalidated or fabricated APPROVE.
+
+    Truncated to fit RiskGuardianOutput.risk_rationale's max_length=400 --
+    the fail-closed fallback must never itself throw a ValidationError,
+    or the "safety net" becomes a second point of failure."""
+    truncated_reason = reason[:400] if len(reason) > 400 else reason
     return RiskGuardianOutput(
         signal_id=signal_id,
         decision=RiskDecision.VETO,
-        veto_reason=reason,
-        risk_rationale=reason,
+        veto_reason=truncated_reason,
+        risk_rationale=truncated_reason,
         position_size_contracts=0,
         final_max_loss_usd=0.0,
         final_max_hold_hours=0.0,
