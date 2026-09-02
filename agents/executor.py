@@ -41,9 +41,11 @@ BUG HISTORY (all confirmed live during this session, not theoretical):
    --strike-price-gte/-lte, bounding the fetch to a band around the
    underlying price sized off the computed spread width.
 
-KNOWN OPEN ITEM: Executor does not yet persist final_max_hold_hours
-anywhere -- Position Monitor (not yet built) is the piece meant to
-enforce it on open positions.
+Integration: on a successful (non-dry-run) order submission, this module
+calls position_monitor.record_submitted_order() so the deterministic
+Position Monitor polling loop can later enforce final_max_loss_usd /
+final_max_hold_hours on the position. See run_executor()'s
+ORDER_SUBMITTED branch.
 
 Usage:
     from executor import run_executor
@@ -477,6 +479,29 @@ def run_executor(scout_output: Any, risk_output: Any, dry_run: bool = True) -> d
 
     action = "ORDER_SUBMITTED" if not cli_response.get("_dry_run") else "NO_ORDER"
     reason = "dry run only -- set dry_run=False to actually submit" if cli_response.get("_dry_run") else "order submitted"
+
+    if action == "ORDER_SUBMITTED":
+        try:
+            from position_monitor import record_submitted_order
+            record_submitted_order(
+                signal_id=signal_id,
+                client_order_id=order_payload.get("client_order_id"),
+                symbol=symbol,
+                contracts=position_size_contracts,
+                long_option_symbol=selection["long_symbol"],
+                short_option_symbol=selection["short_symbol"],
+                final_max_loss_usd=final_max_loss_usd,
+                final_max_hold_hours=final_max_hold_hours,
+            )
+            log.info("Recorded submitted order for signal_id=%s in Position Monitor DB.", signal_id)
+        except Exception as exc:
+            log.error(
+                "Failed to record submitted order for signal_id=%s in Position Monitor: %s. "
+                "Position is now UNMONITORED -- final_max_loss_usd/final_max_hold_hours will "
+                "NOT be enforced automatically. Manual tracking required.",
+                signal_id, exc,
+            )
+
     log.info("Executor result for signal_id=%s: %s (%s)", signal_id, action, reason)
     return ExecResult(action=action, reason=reason, order_payload=order_payload,
                        cli_response=cli_response, signal_id=signal_id,
