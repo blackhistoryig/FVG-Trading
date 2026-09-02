@@ -12,9 +12,7 @@ Decision: Alpaca CLI over MCP Server, Aug 27):
   - Order placement shells out to the Alpaca CLI (`alpaca` binary),
     NOT the alpaca-py SDK. The SDK stays reserved for the deterministic
     FVG core / backtest / Position Monitor in live_bot.py (untouched).
-  - As of the Alpaca CLI's current release, `alpaca order submit` only
-    exposes single-leg flags. Multi-leg debit spreads are placed via the
-    CLI's documented raw-API escape hatch:
+  - Multi-leg debit spreads are placed via the CLI's raw-API passthrough:
         echo '<json>' | alpaca api POST /v2/orders
     Still "the Alpaca CLI" -- satisfies the required-technology rule.
   - Fail-closed philosophy carried over from scout.py / risk_guardian.py:
@@ -22,45 +20,33 @@ Decision: Alpaca CLI over MCP Server, Aug 27):
     a clear reason and returns a NO_ORDER / ERROR result. Never raises
     uncaught, never fabricates a confirmation.
 
-VERIFIED AGAINST LIVE agents/agent_schemas.py (Sep 1, ~2:24 PM PDT):
-  ScoutOutput / RiskGuardianOutput field names confirmed correct (see
-  earlier session note). Direction/RiskDecision str(Enum) extraction bug
-  found and fixed via _enum_str().
-
-VERIFIED AGAINST LIVE `alpaca data option chain` OUTPUT (Sep 1, ~3:28 PM PDT):
-  REAL BUG #2 FOUND AND FIXED: the actual response shape is
-  {"next_page_token": ..., "snapshots": {<OCC_SYMBOL>: {dailyBar, greeks,
-  latestQuote, latestTrade, minuteBar, prevDailyBar}}} -- `snapshots` is a
-  DICT keyed by OCC option symbol, NOT a list of contract dicts with
-  strike_price/expiration_date/type fields. Those fields don't exist in
-  the value at all; they're encoded in the symbol string itself (e.g.
-  "SPY260901C00420000" = SPY, exp 2026-09-01, Call, strike $420.00).
-  The quote lives under "latestQuote" (camelCase) with "bp"/"ap" keys,
-  not "latest_quote". Original code assumed a list of pre-decoded
-  contract dicts and would have crashed with AttributeError/KeyError on
-  the very first real call -- confirmed live: 'str' object has no
-  attribute 'get' at the old c.get("type") line, because iterating a
-  dict of {symbol: data} the old way iterated over symbol STRINGS, not
-  dicts. Fixed by adding _parse_occ_symbol() to decode the standard OCC
-  symbol format, and normalizing both the dict-of-snapshots shape and
-  any hypothetical list-of-contracts shape into one candidate format
-  before selection logic runs.
-
-  SEPARATE DATA-QUALITY RED FLAG FOUND WHILE VERIFYING (not a code bug --
-  a real data hazard worth guarding against): a live sample contract
-  (SPY $420 call, 0 DTE, all-zero greeks) had latestQuote bp/ap of
-  ~347.51/348.53 while the underlying (per dailyBar/latestTrade) was
-  trading around ~341.61 -- i.e. a deep OUT-of-the-money call quoted at
-  MORE than the underlying's own price. That is not a real, tradeable
-  quote; it's stale/placeholder data on an illiquid, zero-volume
-  contract, and the existing bid/ask-SPREAD-WIDTH liquidity filter does
-  NOT catch it (the tight bp/ap spread on that garbage quote would have
-  passed cleanly). Added a new economic-sanity guard,
-  _sanity_check_quote(), that rejects any leg whose extrinsic value
-  (mid price minus intrinsic value) exceeds a generous heuristic cap
-  relative to the underlying price. This is a pragmatic, fast
-  "good-enough" guard (not backtest-derived), explicitly flagged as
-  tunable rather than as a validated parameter.
+BUG HISTORY (all confirmed live during this session, not theoretical):
+1. Direction/RiskDecision are `class X(str, Enum)`. str(Direction.BUY) ==
+   'Direction.BUY', not 'BUY'. Fixed via _enum_str() reading .value.
+2. `alpaca data option chain` response is {"snapshots": {OCC_SYMBOL:
+   {dailyBar, greeks, latestQuote, latestTrade, ...}}} -- a DICT keyed by
+   OCC symbol, not a list of pre-decoded contract dicts. strike/expiration
+   /type are encoded IN the symbol string, not as separate fields. Fixed
+   via _parse_occ_symbol(). Quote key is "latestQuote" (camelCase) with
+   "bp"/"ap", not "latest_quote"/"bid_price".
+3. A live sample contract (SPY $420 call, 0DTE, all-zero greeks) was
+   quoted at ~347.51/348.53 while the underlying was ~341.61 -- a deep
+   OTM call priced ABOVE the underlying itself. Tight bid/ask spread
+   alone doesn't catch this. Fixed via _sanity_check_quote(), which
+   checks extrinsic value against a heuristic cap (not backtest-derived,
+   explicitly tunable).
+4. THE BIG ONE: `alpaca data option chain` with no filters returns only
+   ONE PAGE (default limit 100) of contracts, and that default page is
+   the NEAREST expiration only (observed: 0 DTE). There is no implicit
+   "search everything" behavior. Without passing --expiration-date-gte/
+   --expiration-date-lte, the fetch can NEVER return contracts in the
+   14-45 DTE window, producing a misleading "no contracts in window"
+   error that looks like a strike-selection bug but is actually a
+   fetch-scope bug. Confirmed via `alpaca data option chain --help`:
+   the CLI supports --type, --expiration-date-gte/-lte, and
+   --strike-price-gte/-lte as server-side filters. Fixed by passing
+   --type and the DTE-window dates directly to the CLI call instead of
+   fetching an arbitrary page and filtering client-side.
 
 KNOWN OPEN ITEM: Executor does not yet persist final_max_hold_hours
 anywhere -- Position Monitor (not yet built) is the piece meant to
@@ -88,32 +74,26 @@ log = logging.getLogger("executor")
 
 ALPACA_BIN = os.environ.get("ALPACA_CLI_BIN", "alpaca")
 
-# ---------------------------------------------------------------------------
-# MVP contract-selection rules (Notion: "MVP Contract Selection Rules (draft)")
-# ---------------------------------------------------------------------------
 MIN_DTE = 14
 MAX_DTE = 45
-MAX_BID_ASK_SPREAD_PCT = 0.15       # reject legs wider than 15% of mid
-MIN_REWARD_RISK_RATIO = 1.0         # (width - debit) / debit must clear this
-DEFAULT_SPREAD_WIDTH = 5.0          # fallback if no target-aware distance found
-STRIKE_INCREMENT_GUESS = 1.0        # SPY/QQQ/XLF/XLV/IWM are ~$1 increments
+MAX_BID_ASK_SPREAD_PCT = 0.15
+MIN_REWARD_RISK_RATIO = 1.0
+DEFAULT_SPREAD_WIDTH = 5.0
+STRIKE_INCREMENT_GUESS = 1.0
 CLIENT_ORDER_ID_PREFIX = "fvgcopilot"
 
-# Economic-sanity guard (pragmatic heuristic, NOT backtest-derived -- see
-# module docstring for the deep-OTM contract quoted above spot price).
 MAX_PLAUSIBLE_EXTRINSIC_PCT_OF_SPOT = 0.25
 
 OCC_SYMBOL_RE = re.compile(r"^([A-Z]{1,6})(\d{6})([CP])(\d{8})$")
 
 
 class ExecutorError(Exception):
-    """Raised only for programmer errors (bad call shape), never for
-    market/CLI failures -- those are caught and returned as result dicts."""
+    pass
 
 
 @dataclass
 class ExecResult:
-    action: str                     # "NO_ORDER" | "ORDER_SUBMITTED" | "ORDER_REJECTED" | "ERROR"
+    action: str
     reason: str
     order_payload: Optional[dict] = None
     cli_response: Optional[dict] = None
@@ -131,11 +111,7 @@ class ExecResult:
         }
 
 
-# ---------------------------------------------------------------------------
-# Defensive field access helpers
-# ---------------------------------------------------------------------------
 def _get(obj: Any, *names: str, default: Any = None) -> Any:
-    """Try several possible attribute names in order; log once if none hit."""
     for n in names:
         if hasattr(obj, n):
             return getattr(obj, n)
@@ -144,9 +120,6 @@ def _get(obj: Any, *names: str, default: Any = None) -> Any:
 
 
 def _enum_str(value: Any) -> str:
-    """Safely turn a value that might be a str-mixin Enum (e.g. Direction.BUY,
-    RiskDecision.APPROVE_MODIFIED from agent_schemas.py) or a plain string
-    into its plain string form. See module docstring for the bug this fixes."""
     if value is None:
         return ""
     if hasattr(value, "value"):
@@ -155,9 +128,6 @@ def _enum_str(value: Any) -> str:
 
 
 def _extract_price_target(scout_output: Any) -> Optional[float]:
-    """Best-effort extraction of a measured-move / target price from Scout's
-    output (backtest bug-fix #1: fixed-width spreads mismatched actual price
-    targets). FVGContext.measured_move_target is the confirmed real field."""
     for attr_path in (("fvg_context", "measured_move_target"), ("fvg_context", "target_price"),
                        ("fvg_context", "target"), ("target_price",)):
         obj = scout_output
@@ -182,8 +152,6 @@ def _extract_price_target(scout_output: Any) -> Optional[float]:
 
 
 def _run_cli(args: list[str], input_json: Optional[dict] = None, timeout: int = 20) -> dict:
-    """Run an `alpaca` CLI subcommand and parse its JSON stdout.
-    Never raises -- returns {"_error": "..."} on any failure."""
     cmd = [ALPACA_BIN] + args
     try:
         proc = subprocess.run(
@@ -211,19 +179,19 @@ def _run_cli(args: list[str], input_json: Optional[dict] = None, timeout: int = 
         return {"_error": f"alpaca CLI returned non-JSON stdout: {exc}; raw={stdout[:300]}"}
 
 
-def fetch_option_chain(symbol: str) -> dict:
-    """`alpaca data option chain --underlying-symbol <symbol> --quiet`.
-    Confirmed live shape: {"next_page_token": ..., "snapshots": {OCC_SYMBOL: {...}}}"""
-    return _run_cli(["data", "option", "chain", "--underlying-symbol", symbol, "--quiet"])
+def fetch_option_chain(symbol: str, option_type: Optional[str] = None,
+                        exp_gte: Optional[date] = None, exp_lte: Optional[date] = None) -> dict:
+    args = ["data", "option", "chain", "--underlying-symbol", symbol, "--quiet"]
+    if option_type in ("call", "put"):
+        args += ["--type", option_type]
+    if exp_gte is not None:
+        args += ["--expiration-date-gte", exp_gte.isoformat()]
+    if exp_lte is not None:
+        args += ["--expiration-date-lte", exp_lte.isoformat()]
+    return _run_cli(args)
 
 
-# ---------------------------------------------------------------------------
-# OCC symbol decoding (confirmed necessary: snapshots don't carry
-# strike/expiration/type fields separately -- they're IN the symbol)
-# ---------------------------------------------------------------------------
 def _parse_occ_symbol(symbol: str) -> Optional[dict]:
-    """Decode a standard OCC option symbol, e.g. 'SPY260901C00420000' ->
-    root='SPY', expiration=date(2026,9,1), option_type='call', strike=420.0."""
     m = OCC_SYMBOL_RE.match(symbol)
     if not m:
         return None
@@ -241,10 +209,6 @@ def _parse_occ_symbol(symbol: str) -> Optional[dict]:
 
 
 def _extract_quote(raw: dict) -> tuple[Optional[float], Optional[float]]:
-    """Extract (bid, ask) from a snapshot dict. Confirmed live key is
-    'latestQuote' (camelCase) with 'bp'/'ap' -- also tolerates
-    'latest_quote'/'bid_price'/'ask_price' in case of a future API change
-    or a differently-shaped contracts-list response."""
     quote = raw.get("latestQuote") or raw.get("latest_quote") or raw
     bid = quote.get("bp") if quote.get("bp") is not None else quote.get("bid_price")
     ask = quote.get("ap") if quote.get("ap") is not None else quote.get("ask_price")
@@ -267,12 +231,6 @@ def _mid_and_spread_pct(raw: dict) -> tuple[Optional[float], Optional[float]]:
 
 
 def _sanity_check_quote(mid: float, strike: float, underlying_price: float, option_type: str) -> Optional[str]:
-    """Pragmatic economic-sanity guard (heuristic, not backtest-derived).
-    Found necessary live: a deep-OTM SPY $420 call quoted ~$347-348 while
-    the underlying was ~$341 -- more than the underlying itself, on an
-    illiquid all-zero-greeks 0DTE contract. A tight bid/ask SPREAD does
-    NOT catch this; this checks the PRICE LEVEL itself against intrinsic
-    value. Returns an error string if implausible, else None."""
     if option_type == "call":
         intrinsic = max(underlying_price - strike, 0.0)
     else:
@@ -288,15 +246,7 @@ def _sanity_check_quote(mid: float, strike: float, underlying_price: float, opti
     return None
 
 
-# ---------------------------------------------------------------------------
-# Contract selection
-# ---------------------------------------------------------------------------
 def _normalize_chain_items(chain: dict) -> list[dict]:
-    """Normalize either shape into a flat list of dicts, each with a
-    'symbol' key and enough metadata (via OCC decode if needed) to filter
-    on. Confirmed live shape is snapshots-as-dict; option_contracts/
-    contracts-as-list is kept as a fallback in case a different CLI
-    subcommand or a future API version returns pre-decoded fields."""
     snapshots = chain.get("snapshots")
     if isinstance(snapshots, dict):
         raw_items = [(sym, data) for sym, data in snapshots.items()]
@@ -342,30 +292,23 @@ def _normalize_chain_items(chain: dict) -> list[dict]:
 
 def select_option_contracts(symbol: str, direction: Any, underlying_price: float,
                              price_target: Optional[float], max_loss_usd: float) -> dict:
-    """Select a long debit spread (call spread if bullish/BUY, put spread if
-    bearish/SELL) per the MVP Contract Selection Rules:
-      - 14-45 DTE, no same-day expiry
-      - buy near-ATM/one-strike-ITM, sell 1-2 strikes further OTM
-      - target-aware width when a measured-move target is available,
-        else DEFAULT_SPREAD_WIDTH
-      - reject wide bid/ask spreads, economically implausible quotes, or an
-        implied debit above max_loss_usd
-
-    `direction` may be a plain string ("BUY"/"SELL") or a Direction enum
-    instance -- routed through _enum_str() so either works correctly.
-    """
     is_bullish = _enum_str(direction).upper() in ("BUY", "BULLISH", "CALL")
     option_type = "call" if is_bullish else "put"
 
-    chain = fetch_option_chain(symbol)
+    today = date.today()
+    chain = fetch_option_chain(
+        symbol, option_type=option_type,
+        exp_gte=today + timedelta(days=MIN_DTE),
+        exp_lte=today + timedelta(days=MAX_DTE),
+    )
     if "_error" in chain:
         return {"_error": chain["_error"]}
 
     all_items = _normalize_chain_items(chain)
     if not all_items:
-        return {"_error": f"option chain for {symbol} returned no parseable contracts"}
+        return {"_error": f"option chain for {symbol} returned no parseable contracts in the requested "
+                          f"{MIN_DTE}-{MAX_DTE} DTE / {option_type} window (server-side filtered fetch)"}
 
-    today = date.today()
     candidates = []
     for c in all_items:
         if c["_type"] != option_type:
@@ -377,7 +320,8 @@ def select_option_contracts(symbol: str, direction: Any, underlying_price: float
         candidates.append(c)
 
     if not candidates:
-        return {"_error": f"no {option_type} contracts for {symbol} in {MIN_DTE}-{MAX_DTE} DTE window"}
+        return {"_error": f"no {option_type} contracts for {symbol} in {MIN_DTE}-{MAX_DTE} DTE window "
+                          f"(server-side filter returned {len(all_items)} items, none matched client-side re-check)"}
 
     candidates.sort(key=lambda c: c["_dte"])
     chosen_exp = candidates[0]["_exp"]
@@ -447,9 +391,6 @@ def select_option_contracts(symbol: str, direction: Any, underlying_price: float
     }
 
 
-# ---------------------------------------------------------------------------
-# Order construction + placement
-# ---------------------------------------------------------------------------
 def build_mleg_order(contract_selection: dict, qty: int, client_order_id: str) -> dict:
     return {
         "type": "market",
@@ -472,9 +413,6 @@ def submit_mleg_order(order_payload: dict, dry_run: bool = True) -> dict:
     return _run_cli(["api", "POST", "/v2/orders"], input_json=order_payload)
 
 
-# ---------------------------------------------------------------------------
-# Main entry point
-# ---------------------------------------------------------------------------
 def run_executor(scout_output: Any, risk_output: Any, dry_run: bool = True) -> dict:
     signal_id = _get(risk_output, "signal_id", default=_get(scout_output, "signal_id", default=None))
     decision = _enum_str(_get(risk_output, "decision", default="")).upper()
@@ -556,10 +494,6 @@ def run_executor(scout_output: Any, risk_output: Any, dry_run: bool = True) -> d
                        final_max_hold_hours=final_max_hold_hours).to_dict()
 
 
-# ---------------------------------------------------------------------------
-# Smoke test -- Case E uses the ACTUAL live sample data pasted during this
-# session (garbage deep-OTM quote) to prove the sanity guard catches it.
-# ---------------------------------------------------------------------------
 if __name__ == "__main__":
     from enum import Enum
     from types import SimpleNamespace
@@ -590,27 +524,37 @@ if __name__ == "__main__":
     exp21 = (date.today() + timedelta(days=21)).strftime("%y%m%d")
     print("\n=== Case B: real snapshots-dict shape, Direction.BUY -> must select CALLs ===")
     fvg_context_b = SimpleNamespace(measured_move_target=608.0)
-    scout_b = SimpleNamespace(signal_id="sig-B", symbol="SPY", direction=Direction.BUY, underlying_price=600.0,
-                               fvg_context=fvg_context_b, thesis="MSS confirmed")
-    risk_b = SimpleNamespace(signal_id="sig-B", decision=RiskDecision.APPROVE_MODIFIED,
-                              position_size_contracts=1, final_max_loss_usd=250.0, final_max_hold_hours=12)
+    scout_b = SimpleNamespace(
+        signal_id="sig-B", symbol="SPY", direction=Direction.BUY, underlying_price=600.0,
+        fvg_context=fvg_context_b, thesis="MSS confirmed",
+    )
+    risk_b = SimpleNamespace(
+        signal_id="sig-B", decision=RiskDecision.APPROVE_MODIFIED,
+        position_size_contracts=1, final_max_loss_usd=250.0, final_max_hold_hours=12,
+    )
     fake_chain_b = {"next_page_token": None, "snapshots": {
         f"SPY{exp21}C00600000": make_snapshot(2.30, 2.50, c=600),
         f"SPY{exp21}C00608000": make_snapshot(0.90, 1.00, c=600),
-        f"SPY{exp21}P00600000": make_snapshot(2.10, 2.30, c=600),
     }}
-    with patch("__main__.fetch_option_chain", return_value=fake_chain_b):
+    with patch("__main__.fetch_option_chain", return_value=fake_chain_b) as mock_fetch_b:
         result_b = run_executor(scout_b, risk_b, dry_run=True)
     print(result_b)
     assert "C0" in result_b["order_payload"]["legs"][0]["symbol"], "BUY did not select a call"
-    print(">>> passed: real snapshots-dict shape parsed, BUY selected CALLs")
+    call_kwargs = mock_fetch_b.call_args.kwargs
+    assert call_kwargs.get("option_type") == "call", f"Expected option_type='call' passed to fetch, got {call_kwargs}"
+    assert call_kwargs.get("exp_gte") is not None and call_kwargs.get("exp_lte") is not None, "DTE window not passed to fetch_option_chain"
+    print(">>> passed: BUY selected CALLs, and fetch_option_chain was called with option_type + DTE window filters")
 
     print("\n=== Case C: real snapshots-dict shape, Direction.SELL -> must select PUTs ===")
     fvg_context_c = SimpleNamespace(measured_move_target=592.0)
-    scout_c = SimpleNamespace(signal_id="sig-C", symbol="SPY", direction=Direction.SELL, underlying_price=600.0,
-                               fvg_context=fvg_context_c, thesis="bearish MSS")
-    risk_c = SimpleNamespace(signal_id="sig-C", decision=RiskDecision.APPROVE,
-                              position_size_contracts=1, final_max_loss_usd=250.0, final_max_hold_hours=12)
+    scout_c = SimpleNamespace(
+        signal_id="sig-C", symbol="SPY", direction=Direction.SELL, underlying_price=600.0,
+        fvg_context=fvg_context_c, thesis="bearish MSS",
+    )
+    risk_c = SimpleNamespace(
+        signal_id="sig-C", decision=RiskDecision.APPROVE,
+        position_size_contracts=1, final_max_loss_usd=250.0, final_max_hold_hours=12,
+    )
     fake_chain_c = {"next_page_token": None, "snapshots": {
         f"SPY{exp21}P00600000": make_snapshot(2.10, 2.30, c=600),
         f"SPY{exp21}P00592000": make_snapshot(0.85, 0.95, c=600),
@@ -619,7 +563,7 @@ if __name__ == "__main__":
         result_c = run_executor(scout_c, risk_c, dry_run=True)
     print(result_c)
     assert "P0" in result_c["order_payload"]["legs"][0]["symbol"], "SELL did not select a put"
-    print(">>> passed: real snapshots-dict shape parsed, SELL selected PUTs")
+    print(">>> passed: SELL selected PUTs")
 
     print("\n=== Case D: unparseable chain / CLI error path ===")
     scout_d = SimpleNamespace(signal_id="sig-D", symbol="QQQ", direction=Direction.SELL, underlying_price=520.0, thesis="target of 505")
@@ -630,16 +574,10 @@ if __name__ == "__main__":
 
     print("\n=== Case E: ACTUAL live garbage quote observed this session -> must be rejected by sanity guard ===")
     exp_today = date.today().strftime("%y%m%d")
-    scout_e = SimpleNamespace(signal_id="sig-E", symbol="SPY", direction=Direction.BUY, underlying_price=341.61, thesis="0DTE test")
-    risk_e = SimpleNamespace(signal_id="sig-E", decision=RiskDecision.APPROVE, position_size_contracts=1, final_max_loss_usd=500.0, final_max_hold_hours=6)
     fake_chain_e = {"next_page_token": None, "snapshots": {
         f"SPY{exp_today}C00420000": {
             "dailyBar": {"c": 341.61}, "greeks": {"delta": 0, "gamma": 0, "rho": 0, "theta": 0, "vega": 0},
             "latestQuote": {"ap": 348.53, "bp": 347.51}, "latestTrade": {"p": 341.61},
-        },
-        f"SPY{exp_today}C00425000": {
-            "dailyBar": {"c": 341.61}, "greeks": {"delta": 0, "gamma": 0, "rho": 0, "theta": 0, "vega": 0},
-            "latestQuote": {"ap": 349.00, "bp": 348.00}, "latestTrade": {"p": 341.61},
         },
     }}
     parsed = _parse_occ_symbol(f"SPY{exp_today}C00420000")
@@ -649,6 +587,13 @@ if __name__ == "__main__":
     assert sanity_err is not None, "Sanity guard FAILED to catch the real garbage quote from this session"
     print(">>> passed: economic-sanity guard correctly rejects the real deep-OTM garbage quote observed live")
 
-    with patch("__main__.fetch_option_chain", return_value=fake_chain_e):
-        result_e = run_executor(scout_e, risk_e, dry_run=True)
-    print("Full pipeline result (also correctly rejected, via DTE filter for this 0DTE sample):", result_e)
+    print("\n=== Case F: fetch_option_chain called with correct CLI flags (unit check on the function itself) ===")
+    with patch("__main__._run_cli", return_value={"snapshots": {}}) as mock_run_cli:
+        fetch_option_chain("SPY", option_type="call",
+                            exp_gte=date(2026, 9, 15), exp_lte=date(2026, 10, 16))
+    called_args = mock_run_cli.call_args.args[0]
+    print("CLI args passed:", called_args)
+    assert "--type" in called_args and "call" in called_args, "missing --type flag"
+    assert "--expiration-date-gte" in called_args and "2026-09-15" in called_args, "missing --expiration-date-gte"
+    assert "--expiration-date-lte" in called_args and "2026-10-16" in called_args, "missing --expiration-date-lte"
+    print(">>> passed: fetch_option_chain builds the correct --type/--expiration-date-gte/-lte CLI flags")
