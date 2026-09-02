@@ -13,49 +13,58 @@ Decision: Alpaca CLI over MCP Server, Aug 27):
     NOT the alpaca-py SDK. The SDK stays reserved for the deterministic
     FVG core / backtest / Position Monitor in live_bot.py (untouched).
   - As of the Alpaca CLI's current release, `alpaca order submit` only
-    exposes single-leg flags (--symbol/--side/--qty/--type/...). There is
-    no first-class multi-leg (mleg) flag yet, so multi-leg debit spreads
-    are placed via the CLI's documented raw-API escape hatch:
+    exposes single-leg flags. Multi-leg debit spreads are placed via the
+    CLI's documented raw-API escape hatch:
         echo '<json>' | alpaca api POST /v2/orders
-    This is still "the Alpaca CLI", satisfying the required-technology
-    rule, and matches Alpaca's own multi-leg payload shape
-    (order_class="mleg", legs=[...]).
+    Still "the Alpaca CLI" -- satisfies the required-technology rule.
   - Fail-closed philosophy carried over from scout.py / risk_guardian.py:
     every function either returns a clean, explicit result dict, or logs
-    a clear reason and returns a NO_ORDER / ERROR result. It never raises
-    an uncaught exception up to a caller, and it never fabricates an order
-    confirmation.
+    a clear reason and returns a NO_ORDER / ERROR result. Never raises
+    uncaught, never fabricates a confirmation.
 
 VERIFIED AGAINST LIVE agents/agent_schemas.py (Sep 1, ~2:24 PM PDT):
-  - ScoutOutput: signal_id, symbol, direction (Direction: "BUY"/"SELL"),
-    underlying_price, fvg_context (FVGContext: gap_type, mss_confirmed,
-    displacement_strength, measured_move_target, entry_bar_timestamp),
-    thesis, market_context, confidence_score, suggested_strategy
-    (OptionsStrategy), suggested_expiration_bias, risk_flags,
-    recommended_max_loss_usd, recommended_max_hold_hours, generated_at.
-  - RiskGuardianOutput: signal_id, decision (RiskDecision: APPROVE /
-    APPROVE_MODIFIED / VETO), veto_reason, risk_rationale,
-    position_size_contracts, final_max_loss_usd, final_max_hold_hours,
-    generated_at.
-  - FVGContext.measured_move_target IS the real target-price field --
-    _extract_price_target() below already matched this name correctly.
-  - REAL BUG CAUGHT AND FIXED during this verification: Direction and
-    RiskDecision are `class X(str, Enum)`. Calling plain str(Direction.BUY)
-    returns 'Direction.BUY' (Enum's __str__), NOT 'BUY', even though the
-    instance IS a str. The original draft called str(direction).upper()
-    and would have silently misrouted every BUY signal to a put spread
-    instead of raising an error. Fixed via the _enum_str() helper, which
-    reads .value when present. RiskDecision's "VETO"/"APPROVE" substring
-    check happened to survive the same bug by luck (both are substrings
-    of "RiskDecision.APPROVE_MODIFIED" etc.) but is now routed through
-    the same safe helper for consistency, not left as an accidental pass.
+  ScoutOutput / RiskGuardianOutput field names confirmed correct (see
+  earlier session note). Direction/RiskDecision str(Enum) extraction bug
+  found and fixed via _enum_str().
+
+VERIFIED AGAINST LIVE `alpaca data option chain` OUTPUT (Sep 1, ~3:28 PM PDT):
+  REAL BUG #2 FOUND AND FIXED: the actual response shape is
+  {"next_page_token": ..., "snapshots": {<OCC_SYMBOL>: {dailyBar, greeks,
+  latestQuote, latestTrade, minuteBar, prevDailyBar}}} -- `snapshots` is a
+  DICT keyed by OCC option symbol, NOT a list of contract dicts with
+  strike_price/expiration_date/type fields. Those fields don't exist in
+  the value at all; they're encoded in the symbol string itself (e.g.
+  "SPY260901C00420000" = SPY, exp 2026-09-01, Call, strike $420.00).
+  The quote lives under "latestQuote" (camelCase) with "bp"/"ap" keys,
+  not "latest_quote". Original code assumed a list of pre-decoded
+  contract dicts and would have crashed with AttributeError/KeyError on
+  the very first real call -- confirmed live: 'str' object has no
+  attribute 'get' at the old c.get("type") line, because iterating a
+  dict of {symbol: data} the old way iterated over symbol STRINGS, not
+  dicts. Fixed by adding _parse_occ_symbol() to decode the standard OCC
+  symbol format, and normalizing both the dict-of-snapshots shape and
+  any hypothetical list-of-contracts shape into one candidate format
+  before selection logic runs.
+
+  SEPARATE DATA-QUALITY RED FLAG FOUND WHILE VERIFYING (not a code bug --
+  a real data hazard worth guarding against): a live sample contract
+  (SPY $420 call, 0 DTE, all-zero greeks) had latestQuote bp/ap of
+  ~347.51/348.53 while the underlying (per dailyBar/latestTrade) was
+  trading around ~341.61 -- i.e. a deep OUT-of-the-money call quoted at
+  MORE than the underlying's own price. That is not a real, tradeable
+  quote; it's stale/placeholder data on an illiquid, zero-volume
+  contract, and the existing bid/ask-SPREAD-WIDTH liquidity filter does
+  NOT catch it (the tight bp/ap spread on that garbage quote would have
+  passed cleanly). Added a new economic-sanity guard,
+  _sanity_check_quote(), that rejects any leg whose extrinsic value
+  (mid price minus intrinsic value) exceeds a generous heuristic cap
+  relative to the underlying price. This is a pragmatic, fast
+  "good-enough" guard (not backtest-derived), explicitly flagged as
+  tunable rather than as a validated parameter.
 
 KNOWN OPEN ITEM: Executor does not yet persist final_max_hold_hours
 anywhere -- Position Monitor (not yet built) is the piece meant to
-enforce it on open positions. For now it is logged and returned in the
-result dict so it isn't silently dropped, but there is no durable
-store (DB/JSON sidecar) wiring it to a not-yet-existing Position Monitor.
-Flag this explicitly when Position Monitor is built.
+enforce it on open positions.
 
 Usage:
     from executor import run_executor
@@ -89,6 +98,12 @@ MIN_REWARD_RISK_RATIO = 1.0         # (width - debit) / debit must clear this
 DEFAULT_SPREAD_WIDTH = 5.0          # fallback if no target-aware distance found
 STRIKE_INCREMENT_GUESS = 1.0        # SPY/QQQ/XLF/XLV/IWM are ~$1 increments
 CLIENT_ORDER_ID_PREFIX = "fvgcopilot"
+
+# Economic-sanity guard (pragmatic heuristic, NOT backtest-derived -- see
+# module docstring for the deep-OTM contract quoted above spot price).
+MAX_PLAUSIBLE_EXTRINSIC_PCT_OF_SPOT = 0.25
+
+OCC_SYMBOL_RE = re.compile(r"^([A-Z]{1,6})(\d{6})([CP])(\d{8})$")
 
 
 class ExecutorError(Exception):
@@ -131,12 +146,7 @@ def _get(obj: Any, *names: str, default: Any = None) -> Any:
 def _enum_str(value: Any) -> str:
     """Safely turn a value that might be a str-mixin Enum (e.g. Direction.BUY,
     RiskDecision.APPROVE_MODIFIED from agent_schemas.py) or a plain string
-    into its plain string form.
-
-    BUG THIS FIXES: for `class Direction(str, Enum): BUY = "BUY"`, calling
-    plain str(Direction.BUY) returns 'Direction.BUY' (Enum's __str__), NOT
-    'BUY' -- even though the instance IS a str. Always route enum-or-str
-    fields through this helper before comparing against literal strings."""
+    into its plain string form. See module docstring for the bug this fixes."""
     if value is None:
         return ""
     if hasattr(value, "value"):
@@ -146,11 +156,8 @@ def _enum_str(value: Any) -> str:
 
 def _extract_price_target(scout_output: Any) -> Optional[float]:
     """Best-effort extraction of a measured-move / target price from Scout's
-    output, to drive target-aware strike selection (backtest bug-fix #1:
-    fixed-width spreads mismatched actual price targets -- see Notion
-    Backtest Log). Confirmed live: FVGContext.measured_move_target is the
-    real field name, tried first below; thesis-text regex is a fallback
-    for robustness only, DEFAULT_SPREAD_WIDTH is the last resort."""
+    output (backtest bug-fix #1: fixed-width spreads mismatched actual price
+    targets). FVGContext.measured_move_target is the confirmed real field."""
     for attr_path in (("fvg_context", "measured_move_target"), ("fvg_context", "target_price"),
                        ("fvg_context", "target"), ("target_price",)):
         obj = scout_output
@@ -176,8 +183,7 @@ def _extract_price_target(scout_output: Any) -> Optional[float]:
 
 def _run_cli(args: list[str], input_json: Optional[dict] = None, timeout: int = 20) -> dict:
     """Run an `alpaca` CLI subcommand and parse its JSON stdout.
-    Never raises -- returns {"_error": "..."} on any failure so callers
-    can fail closed instead of crashing."""
+    Never raises -- returns {"_error": "..."} on any failure."""
     cmd = [ALPACA_BIN] + args
     try:
         proc = subprocess.run(
@@ -206,36 +212,132 @@ def _run_cli(args: list[str], input_json: Optional[dict] = None, timeout: int = 
 
 
 def fetch_option_chain(symbol: str) -> dict:
-    """`alpaca data option chain --underlying-symbol <symbol>`"""
+    """`alpaca data option chain --underlying-symbol <symbol> --quiet`.
+    Confirmed live shape: {"next_page_token": ..., "snapshots": {OCC_SYMBOL: {...}}}"""
     return _run_cli(["data", "option", "chain", "--underlying-symbol", symbol, "--quiet"])
 
 
 # ---------------------------------------------------------------------------
-# Contract selection
+# OCC symbol decoding (confirmed necessary: snapshots don't carry
+# strike/expiration/type fields separately -- they're IN the symbol)
 # ---------------------------------------------------------------------------
-def _parse_expiration(contract: dict) -> Optional[date]:
-    exp_str = contract.get("expiration_date") or contract.get("expiration")
-    if not exp_str:
+def _parse_occ_symbol(symbol: str) -> Optional[dict]:
+    """Decode a standard OCC option symbol, e.g. 'SPY260901C00420000' ->
+    root='SPY', expiration=date(2026,9,1), option_type='call', strike=420.0."""
+    m = OCC_SYMBOL_RE.match(symbol)
+    if not m:
         return None
+    root, date_str, cp, strike_str = m.groups()
     try:
-        return datetime.strptime(exp_str[:10], "%Y-%m-%d").date()
+        exp = datetime.strptime(date_str, "%y%m%d").date()
     except ValueError:
         return None
+    return {
+        "root": root,
+        "expiration": exp,
+        "option_type": "call" if cp == "C" else "put",
+        "strike": int(strike_str) / 1000.0,
+    }
 
 
-def _mid_and_spread_pct(contract: dict) -> tuple[Optional[float], Optional[float]]:
-    quote = contract.get("latest_quote") or contract
-    bid = quote.get("bid_price") or quote.get("bp")
-    ask = quote.get("ask_price") or quote.get("ap")
+def _extract_quote(raw: dict) -> tuple[Optional[float], Optional[float]]:
+    """Extract (bid, ask) from a snapshot dict. Confirmed live key is
+    'latestQuote' (camelCase) with 'bp'/'ap' -- also tolerates
+    'latest_quote'/'bid_price'/'ask_price' in case of a future API change
+    or a differently-shaped contracts-list response."""
+    quote = raw.get("latestQuote") or raw.get("latest_quote") or raw
+    bid = quote.get("bp") if quote.get("bp") is not None else quote.get("bid_price")
+    ask = quote.get("ap") if quote.get("ap") is not None else quote.get("ask_price")
     try:
         bid, ask = float(bid), float(ask)
     except (TypeError, ValueError):
         return None, None
     if bid <= 0 or ask <= 0 or ask < bid:
         return None, None
+    return bid, ask
+
+
+def _mid_and_spread_pct(raw: dict) -> tuple[Optional[float], Optional[float]]:
+    bid, ask = _extract_quote(raw)
+    if bid is None or ask is None:
+        return None, None
     mid = (bid + ask) / 2
     spread_pct = (ask - bid) / mid if mid else None
     return mid, spread_pct
+
+
+def _sanity_check_quote(mid: float, strike: float, underlying_price: float, option_type: str) -> Optional[str]:
+    """Pragmatic economic-sanity guard (heuristic, not backtest-derived).
+    Found necessary live: a deep-OTM SPY $420 call quoted ~$347-348 while
+    the underlying was ~$341 -- more than the underlying itself, on an
+    illiquid all-zero-greeks 0DTE contract. A tight bid/ask SPREAD does
+    NOT catch this; this checks the PRICE LEVEL itself against intrinsic
+    value. Returns an error string if implausible, else None."""
+    if option_type == "call":
+        intrinsic = max(underlying_price - strike, 0.0)
+    else:
+        intrinsic = max(strike - underlying_price, 0.0)
+    extrinsic = mid - intrinsic
+    cap = underlying_price * MAX_PLAUSIBLE_EXTRINSIC_PCT_OF_SPOT
+    if extrinsic > cap:
+        return (f"implausible extrinsic value ${extrinsic:.2f} (mid ${mid:.2f}, intrinsic ${intrinsic:.2f}) "
+                f"exceeds sanity cap ${cap:.2f} ({MAX_PLAUSIBLE_EXTRINSIC_PCT_OF_SPOT:.0%} of spot ${underlying_price:.2f}) "
+                f"-- likely stale/illiquid quote, not a real tradeable price")
+    if extrinsic < -0.05:
+        return f"mid price ${mid:.2f} is below intrinsic value ${intrinsic:.2f} -- likely bad/stale quote"
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Contract selection
+# ---------------------------------------------------------------------------
+def _normalize_chain_items(chain: dict) -> list[dict]:
+    """Normalize either shape into a flat list of dicts, each with a
+    'symbol' key and enough metadata (via OCC decode if needed) to filter
+    on. Confirmed live shape is snapshots-as-dict; option_contracts/
+    contracts-as-list is kept as a fallback in case a different CLI
+    subcommand or a future API version returns pre-decoded fields."""
+    snapshots = chain.get("snapshots")
+    if isinstance(snapshots, dict):
+        raw_items = [(sym, data) for sym, data in snapshots.items()]
+    else:
+        list_source = chain.get("option_contracts") or chain.get("contracts") or []
+        if isinstance(list_source, dict):
+            raw_items = [(sym, data) for sym, data in list_source.items()]
+        else:
+            raw_items = [(c.get("symbol"), c) for c in list_source if isinstance(c, dict)]
+
+    items = []
+    for sym, data in raw_items:
+        if not sym or not isinstance(data, dict):
+            continue
+        occ = _parse_occ_symbol(sym)
+        c_type = (data.get("type") or data.get("contract_type"))
+        exp = None
+        exp_raw = data.get("expiration_date") or data.get("expiration")
+        if exp_raw:
+            try:
+                exp = datetime.strptime(str(exp_raw)[:10], "%Y-%m-%d").date()
+            except ValueError:
+                exp = None
+        strike = None
+        strike_raw = data.get("strike_price") if data.get("strike_price") is not None else data.get("strike")
+        if strike_raw is not None:
+            try:
+                strike = float(strike_raw)
+            except (TypeError, ValueError):
+                strike = None
+
+        if occ:
+            c_type = c_type or occ["option_type"]
+            exp = exp or occ["expiration"]
+            strike = strike if strike is not None else occ["strike"]
+
+        if not c_type or exp is None or strike is None:
+            continue
+
+        items.append({"symbol": sym, "_type": c_type.lower(), "_exp": exp, "_strike": strike, "_raw": data})
+    return items
 
 
 def select_option_contracts(symbol: str, direction: Any, underlying_price: float,
@@ -246,13 +348,11 @@ def select_option_contracts(symbol: str, direction: Any, underlying_price: float
       - buy near-ATM/one-strike-ITM, sell 1-2 strikes further OTM
       - target-aware width when a measured-move target is available,
         else DEFAULT_SPREAD_WIDTH
-      - reject wide bid/ask spreads or an implied debit above max_loss_usd
+      - reject wide bid/ask spreads, economically implausible quotes, or an
+        implied debit above max_loss_usd
 
     `direction` may be a plain string ("BUY"/"SELL") or a Direction enum
     instance -- routed through _enum_str() so either works correctly.
-
-    Returns a dict describing the chosen legs, or {"_error": "..."} if no
-    valid combination is found (executor caller must not place an order then).
     """
     is_bullish = _enum_str(direction).upper() in ("BUY", "BULLISH", "CALL")
     option_type = "call" if is_bullish else "put"
@@ -261,30 +361,19 @@ def select_option_contracts(symbol: str, direction: Any, underlying_price: float
     if "_error" in chain:
         return {"_error": chain["_error"]}
 
-    contracts = chain.get("option_contracts") or chain.get("contracts") or chain.get("snapshots") or []
-    if not contracts:
-        return {"_error": f"option chain for {symbol} returned no contracts"}
+    all_items = _normalize_chain_items(chain)
+    if not all_items:
+        return {"_error": f"option chain for {symbol} returned no parseable contracts"}
 
     today = date.today()
     candidates = []
-    for c in contracts:
-        c_type = (c.get("type") or c.get("contract_type") or "").lower()
-        if c_type != option_type:
+    for c in all_items:
+        if c["_type"] != option_type:
             continue
-        exp = _parse_expiration(c)
-        if exp is None:
-            continue
-        dte = (exp - today).days
+        dte = (c["_exp"] - today).days
         if not (MIN_DTE <= dte <= MAX_DTE):
             continue
-        strike = c.get("strike_price") or c.get("strike")
-        try:
-            strike = float(strike)
-        except (TypeError, ValueError):
-            continue
-        c["_strike"] = strike
         c["_dte"] = dte
-        c["_exp"] = exp
         candidates.append(c)
 
     if not candidates:
@@ -316,16 +405,19 @@ def select_option_contracts(symbol: str, direction: Any, underlying_price: float
             return {"_error": "no OTM strike available below the long put leg"}
         short_leg = min(short_candidates, key=lambda c: abs(c["_strike"] - otm_target_strike))
 
+    leg_mids = {}
     for leg, label in ((long_leg, "long"), (short_leg, "short")):
-        _, spread_pct = _mid_and_spread_pct(leg)
-        if spread_pct is None:
-            return {"_error": f"{label} leg {leg.get('symbol')} missing usable bid/ask quote"}
+        mid, spread_pct = _mid_and_spread_pct(leg["_raw"])
+        if mid is None or spread_pct is None:
+            return {"_error": f"{label} leg {leg['symbol']} missing usable bid/ask quote"}
         if spread_pct > MAX_BID_ASK_SPREAD_PCT:
-            return {"_error": f"{label} leg {leg.get('symbol')} bid/ask spread {spread_pct:.1%} exceeds {MAX_BID_ASK_SPREAD_PCT:.0%} liquidity cap"}
+            return {"_error": f"{label} leg {leg['symbol']} bid/ask spread {spread_pct:.1%} exceeds {MAX_BID_ASK_SPREAD_PCT:.0%} liquidity cap"}
+        sanity_err = _sanity_check_quote(mid, leg["_strike"], underlying_price, option_type)
+        if sanity_err:
+            return {"_error": f"{label} leg {leg['symbol']}: {sanity_err}"}
+        leg_mids[label] = mid
 
-    long_mid, _ = _mid_and_spread_pct(long_leg)
-    short_mid, _ = _mid_and_spread_pct(short_leg)
-    net_debit_per_share = round(long_mid - short_mid, 2)
+    net_debit_per_share = round(leg_mids["long"] - leg_mids["short"], 2)
     if net_debit_per_share <= 0:
         return {"_error": f"computed non-positive net debit ({net_debit_per_share}); refusing to trade a credit here under a debit-spread-only rule"}
 
@@ -343,9 +435,9 @@ def select_option_contracts(symbol: str, direction: Any, underlying_price: float
         "option_type": option_type,
         "expiration": chosen_exp.isoformat(),
         "dte": long_leg["_dte"],
-        "long_symbol": long_leg.get("symbol"),
+        "long_symbol": long_leg["symbol"],
         "long_strike": long_leg["_strike"],
-        "short_symbol": short_leg.get("symbol"),
+        "short_symbol": short_leg["symbol"],
         "short_strike": short_leg["_strike"],
         "net_debit_per_share": net_debit_per_share,
         "spread_width": spread_width_actual,
@@ -359,9 +451,6 @@ def select_option_contracts(symbol: str, direction: Any, underlying_price: float
 # Order construction + placement
 # ---------------------------------------------------------------------------
 def build_mleg_order(contract_selection: dict, qty: int, client_order_id: str) -> dict:
-    """Build the raw /v2/orders JSON payload for a long debit spread.
-    Buying the near-the-money leg, selling the further-OTM leg, both
-    same expiration -- matches Alpaca's documented mleg order shape."""
     return {
         "type": "market",
         "time_in_force": "day",
@@ -369,28 +458,13 @@ def build_mleg_order(contract_selection: dict, qty: int, client_order_id: str) -
         "qty": str(qty),
         "client_order_id": client_order_id,
         "legs": [
-            {
-                "symbol": contract_selection["long_symbol"],
-                "side": "buy",
-                "position_intent": "buy_to_open",
-                "ratio_qty": "1",
-            },
-            {
-                "symbol": contract_selection["short_symbol"],
-                "side": "sell",
-                "position_intent": "sell_to_open",
-                "ratio_qty": "1",
-            },
+            {"symbol": contract_selection["long_symbol"], "side": "buy", "position_intent": "buy_to_open", "ratio_qty": "1"},
+            {"symbol": contract_selection["short_symbol"], "side": "sell", "position_intent": "sell_to_open", "ratio_qty": "1"},
         ],
     }
 
 
 def submit_mleg_order(order_payload: dict, dry_run: bool = True) -> dict:
-    """Place the multi-leg order via the Alpaca CLI's raw API passthrough:
-        echo '<json>' | alpaca api POST /v2/orders
-    dry_run=True (the safe default) prints the exact payload and command
-    that would run, without shelling out, so this can be reviewed before
-    ever hitting the live paper account."""
     if dry_run:
         log.info("[DRY RUN] Would run: echo '<payload>' | %s api POST /v2/orders", ALPACA_BIN)
         log.info("[DRY RUN] Payload: %s", json.dumps(order_payload))
@@ -402,18 +476,6 @@ def submit_mleg_order(order_payload: dict, dry_run: bool = True) -> dict:
 # Main entry point
 # ---------------------------------------------------------------------------
 def run_executor(scout_output: Any, risk_output: Any, dry_run: bool = True) -> dict:
-    """Chain: RiskGuardianOutput -> (VETO -> no-op) | (APPROVE* -> place order).
-
-    Args:
-        scout_output: the ScoutOutput this decision was based on (for
-            symbol/direction/underlying price/target context).
-        risk_output: the RiskGuardianOutput -- the ONLY output the
-            Executor is allowed to act on (per architecture decision).
-        dry_run: if True (default), builds and logs the order but never
-            calls the Alpaca CLI's order-submit endpoint. Set False only
-            once you've reviewed a dry-run payload and are ready to place
-            a real paper order on the "Fable FVG" account.
-    """
     signal_id = _get(risk_output, "signal_id", default=_get(scout_output, "signal_id", default=None))
     decision = _enum_str(_get(risk_output, "decision", default="")).upper()
 
@@ -460,11 +522,8 @@ def run_executor(scout_output: Any, risk_output: Any, dry_run: bool = True) -> d
     per_contract_cap = final_max_loss_usd / position_size_contracts
 
     selection = select_option_contracts(
-        symbol=symbol,
-        direction=direction,
-        underlying_price=underlying_price,
-        price_target=price_target,
-        max_loss_usd=per_contract_cap,
+        symbol=symbol, direction=direction, underlying_price=underlying_price,
+        price_target=price_target, max_loss_usd=per_contract_cap,
     )
     if "_error" in selection:
         log.warning("Contract selection failed for %s: %s", symbol, selection["_error"])
@@ -491,12 +550,6 @@ def run_executor(scout_output: Any, risk_output: Any, dry_run: bool = True) -> d
 
     action = "ORDER_SUBMITTED" if not cli_response.get("_dry_run") else "NO_ORDER"
     reason = "dry run only -- set dry_run=False to actually submit" if cli_response.get("_dry_run") else "order submitted"
-    if action == "ORDER_SUBMITTED":
-        log.info(
-            "Order submitted (signal_id=%s). final_max_hold_hours=%s must still be enforced by the "
-            "not-yet-built Position Monitor -- no persistence layer wires this through yet.",
-            signal_id, final_max_hold_hours,
-        )
     log.info("Executor result for signal_id=%s: %s (%s)", signal_id, action, reason)
     return ExecResult(action=action, reason=reason, order_payload=order_payload,
                        cli_response=cli_response, signal_id=signal_id,
@@ -504,9 +557,8 @@ def run_executor(scout_output: Any, risk_output: Any, dry_run: bool = True) -> d
 
 
 # ---------------------------------------------------------------------------
-# Smoke test (mocked -- no real Alpaca CLI or Groq calls). Uses the REAL
-# enum classes shape (str, Enum) to specifically re-catch the str()-on-enum
-# bug class if it's ever reintroduced.
+# Smoke test -- Case E uses the ACTUAL live sample data pasted during this
+# session (garbage deep-OTM quote) to prove the sanity guard catches it.
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     from enum import Enum
@@ -522,70 +574,81 @@ if __name__ == "__main__":
         APPROVE_MODIFIED = "APPROVE_MODIFIED"
         VETO = "VETO"
 
-    print("=== Case A: VETO (real RiskDecision enum) -> executor must no-op ===")
+    def make_snapshot(bp, ap, c=341.61):
+        return {
+            "dailyBar": {"c": c, "h": c + 0.5, "l": c - 0.5, "n": 6, "o": c, "t": "2026-09-01T04:00:00Z", "v": 6, "vw": c},
+            "greeks": {"delta": 0, "gamma": 0, "rho": 0, "theta": 0, "vega": 0},
+            "latestQuote": {"ap": ap, "as": 2, "ax": "S", "bp": bp, "bs": 1, "bx": "C", "c": " ", "t": "2026-09-01T19:59:59Z"},
+            "latestTrade": {"c": "g", "p": c, "s": 1, "t": "2026-09-01T20:06:42Z", "x": "C"},
+        }
+
+    print("=== Case A: VETO -> executor must no-op ===")
     scout_a = SimpleNamespace(signal_id="sig-A", symbol="SPY", direction=Direction.BUY, underlying_price=600.0, thesis="target of 610")
     risk_a = SimpleNamespace(signal_id="sig-A", decision=RiskDecision.VETO, veto_reason="daily loss limit breached")
     print(run_executor(scout_a, risk_a, dry_run=True))
 
-    print("\n=== Case B: APPROVE_MODIFIED, real Direction.BUY enum -> must select a CALL spread, not a put ===")
+    exp21 = (date.today() + timedelta(days=21)).strftime("%y%m%d")
+    print("\n=== Case B: real snapshots-dict shape, Direction.BUY -> must select CALLs ===")
     fvg_context_b = SimpleNamespace(measured_move_target=608.0)
-    scout_b = SimpleNamespace(
-        signal_id="sig-B", symbol="SPY", direction=Direction.BUY, underlying_price=600.0,
-        fvg_context=fvg_context_b, thesis="MSS confirmed, displacement strong",
-    )
-    risk_b = SimpleNamespace(
-        signal_id="sig-B", decision=RiskDecision.APPROVE_MODIFIED,
-        position_size_contracts=1, final_max_loss_usd=250.0, final_max_hold_hours=12,
-    )
-
-    fake_chain_calls = {
-        "option_contracts": [
-            {"symbol": "SPY260215C00600000", "type": "call", "strike_price": 600.0,
-             "expiration_date": (date.today() + timedelta(days=21)).isoformat(),
-             "latest_quote": {"bid_price": 2.30, "ask_price": 2.50}},
-            {"symbol": "SPY260215C00608000", "type": "call", "strike_price": 608.0,
-             "expiration_date": (date.today() + timedelta(days=21)).isoformat(),
-             "latest_quote": {"bid_price": 0.90, "ask_price": 1.00}},
-            {"symbol": "SPY260215P00600000", "type": "put", "strike_price": 600.0,
-             "expiration_date": (date.today() + timedelta(days=21)).isoformat(),
-             "latest_quote": {"bid_price": 2.10, "ask_price": 2.30}},
-        ]
-    }
-    with patch("__main__.fetch_option_chain", return_value=fake_chain_calls):
+    scout_b = SimpleNamespace(signal_id="sig-B", symbol="SPY", direction=Direction.BUY, underlying_price=600.0,
+                               fvg_context=fvg_context_b, thesis="MSS confirmed")
+    risk_b = SimpleNamespace(signal_id="sig-B", decision=RiskDecision.APPROVE_MODIFIED,
+                              position_size_contracts=1, final_max_loss_usd=250.0, final_max_hold_hours=12)
+    fake_chain_b = {"next_page_token": None, "snapshots": {
+        f"SPY{exp21}C00600000": make_snapshot(2.30, 2.50, c=600),
+        f"SPY{exp21}C00608000": make_snapshot(0.90, 1.00, c=600),
+        f"SPY{exp21}P00600000": make_snapshot(2.10, 2.30, c=600),
+    }}
+    with patch("__main__.fetch_option_chain", return_value=fake_chain_b):
         result_b = run_executor(scout_b, risk_b, dry_run=True)
     print(result_b)
-    assert "C0" in result_b["order_payload"]["legs"][0]["symbol"], "Regression check failed: BUY signal did not select a call contract"
-    print(">>> Regression check passed: Direction.BUY correctly selected CALL contracts (not puts).")
+    assert "C0" in result_b["order_payload"]["legs"][0]["symbol"], "BUY did not select a call"
+    print(">>> passed: real snapshots-dict shape parsed, BUY selected CALLs")
 
-    print("\n=== Case C: SELL direction (real enum) -> must select a PUT spread ===")
+    print("\n=== Case C: real snapshots-dict shape, Direction.SELL -> must select PUTs ===")
     fvg_context_c = SimpleNamespace(measured_move_target=592.0)
-    scout_c = SimpleNamespace(
-        signal_id="sig-C", symbol="SPY", direction=Direction.SELL, underlying_price=600.0,
-        fvg_context=fvg_context_c, thesis="bearish MSS",
-    )
-    risk_c = SimpleNamespace(
-        signal_id="sig-C", decision=RiskDecision.APPROVE,
-        position_size_contracts=1, final_max_loss_usd=250.0, final_max_hold_hours=12,
-    )
-    fake_chain_puts = {
-        "option_contracts": [
-            {"symbol": "SPY260215P00600000", "type": "put", "strike_price": 600.0,
-             "expiration_date": (date.today() + timedelta(days=21)).isoformat(),
-             "latest_quote": {"bid_price": 2.10, "ask_price": 2.30}},
-            {"symbol": "SPY260215P00592000", "type": "put", "strike_price": 592.0,
-             "expiration_date": (date.today() + timedelta(days=21)).isoformat(),
-             "latest_quote": {"bid_price": 0.85, "ask_price": 0.95}},
-        ]
-    }
-    with patch("__main__.fetch_option_chain", return_value=fake_chain_puts):
+    scout_c = SimpleNamespace(signal_id="sig-C", symbol="SPY", direction=Direction.SELL, underlying_price=600.0,
+                               fvg_context=fvg_context_c, thesis="bearish MSS")
+    risk_c = SimpleNamespace(signal_id="sig-C", decision=RiskDecision.APPROVE,
+                              position_size_contracts=1, final_max_loss_usd=250.0, final_max_hold_hours=12)
+    fake_chain_c = {"next_page_token": None, "snapshots": {
+        f"SPY{exp21}P00600000": make_snapshot(2.10, 2.30, c=600),
+        f"SPY{exp21}P00592000": make_snapshot(0.85, 0.95, c=600),
+    }}
+    with patch("__main__.fetch_option_chain", return_value=fake_chain_c):
         result_c = run_executor(scout_c, risk_c, dry_run=True)
     print(result_c)
-    assert "P0" in result_c["order_payload"]["legs"][0]["symbol"], "Regression check failed: SELL signal did not select a put contract"
-    print(">>> Regression check passed: Direction.SELL correctly selected PUT contracts.")
+    assert "P0" in result_c["order_payload"]["legs"][0]["symbol"], "SELL did not select a put"
+    print(">>> passed: real snapshots-dict shape parsed, SELL selected PUTs")
 
     print("\n=== Case D: unparseable chain / CLI error path ===")
     scout_d = SimpleNamespace(signal_id="sig-D", symbol="QQQ", direction=Direction.SELL, underlying_price=520.0, thesis="target of 505")
     risk_d = SimpleNamespace(signal_id="sig-D", decision=RiskDecision.APPROVE, position_size_contracts=1, final_max_loss_usd=200.0, final_max_hold_hours=24)
-    with patch("__main__.fetch_option_chain", return_value={"_error": "simulated CLI failure: alpaca binary not found"}):
+    with patch("__main__.fetch_option_chain", return_value={"_error": "simulated CLI failure"}):
         result_d = run_executor(scout_d, risk_d, dry_run=True)
     print(result_d)
+
+    print("\n=== Case E: ACTUAL live garbage quote observed this session -> must be rejected by sanity guard ===")
+    exp_today = date.today().strftime("%y%m%d")
+    scout_e = SimpleNamespace(signal_id="sig-E", symbol="SPY", direction=Direction.BUY, underlying_price=341.61, thesis="0DTE test")
+    risk_e = SimpleNamespace(signal_id="sig-E", decision=RiskDecision.APPROVE, position_size_contracts=1, final_max_loss_usd=500.0, final_max_hold_hours=6)
+    fake_chain_e = {"next_page_token": None, "snapshots": {
+        f"SPY{exp_today}C00420000": {
+            "dailyBar": {"c": 341.61}, "greeks": {"delta": 0, "gamma": 0, "rho": 0, "theta": 0, "vega": 0},
+            "latestQuote": {"ap": 348.53, "bp": 347.51}, "latestTrade": {"p": 341.61},
+        },
+        f"SPY{exp_today}C00425000": {
+            "dailyBar": {"c": 341.61}, "greeks": {"delta": 0, "gamma": 0, "rho": 0, "theta": 0, "vega": 0},
+            "latestQuote": {"ap": 349.00, "bp": 348.00}, "latestTrade": {"p": 341.61},
+        },
+    }}
+    parsed = _parse_occ_symbol(f"SPY{exp_today}C00420000")
+    mid, spread_pct = _mid_and_spread_pct(fake_chain_e["snapshots"][f"SPY{exp_today}C00420000"])
+    sanity_err = _sanity_check_quote(mid, parsed["strike"], 341.61, "call")
+    print("Direct sanity-guard check on the real garbage sample:", sanity_err)
+    assert sanity_err is not None, "Sanity guard FAILED to catch the real garbage quote from this session"
+    print(">>> passed: economic-sanity guard correctly rejects the real deep-OTM garbage quote observed live")
+
+    with patch("__main__.fetch_option_chain", return_value=fake_chain_e):
+        result_e = run_executor(scout_e, risk_e, dry_run=True)
+    print("Full pipeline result (also correctly rejected, via DTE filter for this 0DTE sample):", result_e)
