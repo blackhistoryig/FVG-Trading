@@ -335,23 +335,36 @@ def compute_mss_and_displacement(df: pd.DataFrame) -> pd.DataFrame:
             active_sl = None
     return df
 
-def has_momentum_confirmation(df: pd.DataFrame, i: int, direction: str) -> bool:
+def has_momentum_confirmation(df: pd.DataFrame, i: int, direction: str, symbol: str = "?") -> bool:
     c2_idx = df.index[i - 1]
     atr = df.at[c2_idx, 'atr']
     vol_ma = df.at[c2_idx, 'vol_ma']
     if pd.isna(atr) or pd.isna(vol_ma) or atr == 0 or vol_ma == 0:
+        print(f"[MOMENTUM_REJECT] {symbol} dir={direction}: NaN/zero base stats -- "
+              f"atr={atr}, vol_ma={vol_ma} (insufficient warmup data in lookback window)")
         return False
 
-    has_displacement = (
-        df.at[c2_idx, 'candle_range'] >= atr * ATR_MULTIPLIER
-        and df.at[c2_idx, 'volume'] >= vol_ma * VOL_MULTIPLIER
-    )
+    candle_range = df.at[c2_idx, 'candle_range']
+    candle_volume = df.at[c2_idx, 'volume']
+    range_ok = candle_range >= atr * ATR_MULTIPLIER
+    vol_ok = candle_volume >= vol_ma * VOL_MULTIPLIER
+    has_displacement = range_ok and vol_ok
     if not has_displacement:
+        print(f"[MOMENTUM_REJECT] {symbol} dir={direction}: displacement failed -- "
+              f"range={candle_range:.4f} vs atr_threshold={atr * ATR_MULTIPLIER:.4f} (ok={range_ok}) | "
+              f"volume={candle_volume:.0f} vs vol_threshold={vol_ma * VOL_MULTIPLIER:.0f} (ok={vol_ok})")
         return False
 
     start_loc = max(0, i - MSS_LOOKBACK_BARS)
     recent_mss = df.iloc[start_loc:i + 1]['mss_signal'].dropna().tolist()
-    return direction in recent_mss
+    mss_ok = direction in recent_mss
+    if not mss_ok:
+        print(f"[MOMENTUM_REJECT] {symbol} dir={direction}: displacement passed but no matching "
+              f"MSS break in last {MSS_LOOKBACK_BARS} bars (found: {recent_mss})")
+        return False
+
+    print(f"[MOMENTUM_PASS] {symbol} dir={direction}: all conditions met")
+    return True
 
 def is_duplicate_or_cooling_down(symbol: str, direction: str, gap_level: float) -> bool:
     now = datetime.now(EST)
@@ -415,7 +428,9 @@ def check_for_fvg_batch(symbols: list):
                     gap_size = c3['low'] - c1['high']
                     if gap_size < MIN_GAP_SIZE:
                         continue
-                    if not has_momentum_confirmation(indexed_df, i, 'BULLISH'):
+                    print(f"[RAW_GAP] {symbol} BULLISH gap_size={gap_size:.4f} "
+                          f"(min={MIN_GAP_SIZE}) at bar_time={indexed_df.index[i]}")
+                    if not has_momentum_confirmation(indexed_df, i, 'BULLISH', symbol):
                         continue
 
                     gap_level = round(c1['high'], 2)
@@ -438,7 +453,9 @@ def check_for_fvg_batch(symbols: list):
                     gap_size = c1['low'] - c3['high']
                     if gap_size < MIN_GAP_SIZE:
                         continue
-                    if not has_momentum_confirmation(indexed_df, i, 'BEARISH'):
+                    print(f"[RAW_GAP] {symbol} BEARISH gap_size={gap_size:.4f} "
+                          f"(min={MIN_GAP_SIZE}) at bar_time={indexed_df.index[i]}")
+                    if not has_momentum_confirmation(indexed_df, i, 'BEARISH', symbol):
                         continue
 
                     gap_level = round(c1['low'], 2)
