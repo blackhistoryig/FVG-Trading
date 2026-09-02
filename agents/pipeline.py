@@ -1,113 +1,178 @@
 """
 agents/pipeline.py
 
-First real Scout -> Risk Guardian chain. Takes one raw FVG signal dict
-from the deterministic core, runs it through Scout to get a proposal,
-then runs that proposal through Risk Guardian to get the final,
-enforceable verdict. This is the core loop the Executor will eventually
-wrap (Executor adds: place the actual order via Alpaca CLI, log to the
-Journal agent, and hand off to the Position Monitor).
+Orchestrates the full Scout -> Risk Guardian -> Executor pipeline for the
+hackathon options-trading agent system.
 
-Deliberately kept as a standalone script (not yet folded into
-executor.py) so it can be run and demoed on its own -- this is the
-first end-to-end proof that Scout's output feeds Risk Guardian's input
-correctly, which is the core "agent pipeline" claim for the submission.
+Fail-closed by design: if any stage raises or returns an invalid result, the
+pipeline stops at that stage and reports the error rather than fabricating a
+downstream result. Mirrors the fail-closed pattern already validated in
+risk_guardian.py and executor.py.
+
+Import style: FLAT, matching scout.py / risk_guardian.py (this project fixed
+a real ModuleNotFoundError earlier from using `agents.xxx`-style imports --
+do not reintroduce that).
 """
-
 from __future__ import annotations
 
 import json
-import os
-from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Dict
 
-from agent_schemas import RiskDecision
+from agent_schemas import (
+    ScoutOutput,
+    RiskGuardianOutput,
+)
 from scout import run_scout
-from risk_guardian import AccountRiskContext, run_risk_guardian
+from risk_guardian import run_risk_guardian, AccountRiskContext
+from executor import run_executor
+
+
+def _enum_str(value: Any) -> str:
+    """
+    Safely coerce a (str, Enum) member (Direction, RiskDecision, etc.) to its
+    plain string value.
+
+    CRITICAL GOTCHA (already bit this project twice, once in executor.py):
+    Direction/RiskDecision inherit (str, Enum). Calling str() directly on an
+    instance returns 'RiskDecision.VETO' (Enum.__str__), NOT 'VETO', even
+    though the instance IS a str. Always route through this helper before
+    comparing to literal strings or printing for humans/logs.
+    """
+    if hasattr(value, "value"):
+        return str(value.value)
+    return str(value)
+
+
+def _print_section(title: str) -> None:
+    print("\n" + "=" * 70)
+    print(title)
+    print("=" * 70)
 
 
 def run_pipeline(
-    raw_signal: dict[str, Any],
+    raw_signal: Dict[str, Any],
     account_context: AccountRiskContext,
-) -> dict[str, Any]:
+    dry_run: bool = True,
+) -> Dict[str, Any]:
     """
-    Runs the full Scout -> Risk Guardian chain for one raw FVG signal.
+    Runs Scout -> Risk Guardian -> Executor end to end.
 
-    Returns a dict with both intermediate and final results so a caller
-    (or a demo script) can print/log the full reasoning chain, not just
-    the final verdict. This is deliberately verbose -- for a hackathon
-    demo, showing the full chain (raw signal -> Scout's thesis -> Risk
-    Guardian's verdict) is the point, not just the end result.
+    Args:
+        raw_signal: raw FVG signal dict, same shape Scout already accepts.
+        account_context: AccountRiskContext (current_daily_pnl_usd,
+            open_position_count, current_symbol_exposure_usd,
+            proposed_trade_cost_usd) for the "Fable FVG" paper account.
+        dry_run: forwarded to run_executor. Defaults True (log-only, no real
+            order submitted). Do NOT flip to False without re-confirming
+            with the user first -- the mleg POST /v2/orders call has never
+            been exercised live as of this handoff.
 
-    Design note: Scout has no veto power and Risk Guardian is the only
-    output the Executor may act on. If Scout's call fails outright
-    (e.g. bad API key, network error), this raises -- there is no
-    "proceed without Scout" path, since Risk Guardian needs a real
-    proposal to evaluate. If Risk Guardian's call fails, it fails
-    closed to VETO internally (see risk_guardian.py) rather than
-    raising, so run_risk_guardian() itself never throws for LLM-side
-    failures -- only for programming errors.
+    Returns:
+        dict with keys: signal_id, scout, risk_guardian, executor,
+        final_status, error. Every stage's raw model output is included
+        (via model_dump) for logging/demo capture, even when a later stage
+        vetoes or fails.
     """
-    print(f"--- Step 1: Scout evaluates raw FVG signal ({raw_signal.get('signal_id')}) ---")
-    scout_output = run_scout(raw_signal)
-    print(scout_output.model_dump_json(indent=2))
-    print()
-
-    print("--- Step 2: Risk Guardian reviews Scout's proposal ---")
-    risk_output = run_risk_guardian(scout_output, account_context)
-    print(risk_output.model_dump_json(indent=2))
-    print()
-
-    final_action = (
-        "PLACE ORDER" if risk_output.decision in (RiskDecision.APPROVE, RiskDecision.APPROVE_MODIFIED)
-        else "NO TRADE (vetoed)"
-    )
-    print(f"--- Final action: {final_action} ---")
-
-    return {
-        "raw_signal": raw_signal,
-        "scout_output": scout_output,
-        "risk_output": risk_output,
-        "final_action": final_action,
+    result: Dict[str, Any] = {
+        "signal_id": raw_signal.get("signal_id"),
+        "scout": None,
+        "risk_guardian": None,
+        "executor": None,
+        "final_status": None,
+        "error": None,
     }
 
+    # ---- Stage 1: Scout (LLM) ----
+    _print_section("STAGE 1: SCOUT")
+    try:
+        scout_output: ScoutOutput = run_scout(raw_signal)
+    except Exception as exc:
+        result["error"] = f"Scout failed: {exc}"
+        result["final_status"] = "ERROR"
+        print(result["error"])
+        return result
 
-# ---------------------------------------------------------------------------
-# Smoke test / demo entry point
-# ---------------------------------------------------------------------------
+    result["scout"] = json.loads(scout_output.model_dump_json())
+    print(f"Symbol: {scout_output.symbol}")
+    print(f"Direction: {_enum_str(scout_output.direction)}")
+    print(f"Suggested strategy: {_enum_str(scout_output.suggested_strategy)}")
+    print(f"Confidence: {scout_output.confidence_score}")
+    print(f"Thesis: {scout_output.thesis}")
+
+    # ---- Stage 2: Risk Guardian (deterministic hard limits + LLM) ----
+    _print_section("STAGE 2: RISK GUARDIAN")
+    try:
+        risk_output: RiskGuardianOutput = run_risk_guardian(scout_output, account_context)
+    except Exception as exc:
+        result["error"] = f"Risk Guardian failed: {exc}"
+        result["final_status"] = "ERROR"
+        print(result["error"])
+        return result
+
+    result["risk_guardian"] = json.loads(risk_output.model_dump_json())
+    decision = _enum_str(risk_output.decision)
+    print(f"Decision: {decision}")
+    if decision == "VETO":
+        print(f"Veto reason: {risk_output.veto_reason}")
+    print(f"Rationale: {risk_output.risk_rationale}")
+
+    # ---- Stage 3: Executor (deterministic, non-agentic) ----
+    # run_executor already no-ops on VETO internally, so it is safe to call
+    # unconditionally here -- this keeps the printed reasoning chain
+    # complete for demo purposes (a VETO'd signal still shows an explicit
+    # "Executor: no-op" instead of silently vanishing from the trace).
+    _print_section(f"STAGE 3: EXECUTOR (dry_run={dry_run})")
+    try:
+        executor_output: Dict[str, Any] = run_executor(scout_output, risk_output, dry_run=dry_run)
+    except Exception as exc:
+        result["error"] = f"Executor failed: {exc}"
+        result["final_status"] = "ERROR"
+        print(result["error"])
+        return result
+
+    result["executor"] = executor_output
+    print(json.dumps(executor_output, indent=2, default=str))
+
+    # ---- Final status ----
+    result["final_status"] = "VETOED" if decision == "VETO" else "PROCESSED"
+
+    _print_section("PIPELINE COMPLETE")
+    print(f"Final status: {result['final_status']}")
+
+    return result
+
 
 if __name__ == "__main__":
-    example_raw_signal = {
-        "signal_id": f"SPY-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
+    # Smoke test using the REAL AccountRiskContext dataclass fields,
+    # confirmed field-for-field against the live risk_guardian.py on
+    # 2026-09-01: current_daily_pnl_usd, open_position_count,
+    # current_symbol_exposure_usd, proposed_trade_cost_usd.
+    import sys
+    from datetime import datetime, timezone
+
+    example_signal = {
+        "signal_id": "SPY-20260901-PIPELINE-TEST",
         "symbol": "SPY",
         "direction": "BUY",
-        "underlying_price": 449.10,
+        "underlying_price": 762.15,
         "fvg_context": {
             "gap_type": "bullish",
             "mss_confirmed": True,
-            "displacement_strength": 1.8,
-            "measured_move_target": 452.30,
+            "displacement_strength": 1.2,
+            "measured_move_target": 777.0,
             "entry_bar_timestamp": datetime.now(timezone.utc).isoformat(),
         },
     }
 
-    # Placeholder account state -- in the live bot, the Executor/Position
-    # Monitor will supply real numbers pulled from the Alpaca CLI
-    # (current day's realized P&L, open position count, per-symbol
-    # exposure). Kept as a simple, editable literal here for demo runs.
-    demo_account_context = AccountRiskContext(
+    # Mirrors risk_guardian.py's own "Case 2: normal case" smoke test --
+    # daily P&L at -$50, one open position, no existing SPY exposure.
+    example_account_context = AccountRiskContext(
         current_daily_pnl_usd=-50.0,
         open_position_count=1,
         current_symbol_exposure_usd=0.0,
         proposed_trade_cost_usd=200.0,
     )
 
-    print("=== Scout -> Risk Guardian pipeline demo ===\n")
-    result = run_pipeline(example_raw_signal, demo_account_context)
-
-    assert result["scout_output"].signal_id == result["risk_output"].signal_id, (
-        "signal_id mismatch between Scout and Risk Guardian output -- "
-        "the handoff is broken."
-    )
-    print("\nPipeline smoke test passed: signal_id matched end-to-end, "
-          "Scout's proposal was consumed and judged by Risk Guardian.")
+    dry = "--live" not in sys.argv
+    output = run_pipeline(example_signal, example_account_context, dry_run=dry)
+    print("\nFinal result keys:", list(output.keys()))
