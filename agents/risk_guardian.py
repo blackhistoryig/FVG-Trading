@@ -16,6 +16,22 @@ talking itself into approving something the account can't safely take.
 Only when all hard limits pass do we call Groq for the qualitative
 risk read (sizing nuance, thesis-quality check, stop-loss reasoning
 grounded in the backtest's "right direction, still lost big" finding).
+
+FIX (2026-09-02): the LLM was observed converging on a ~$50 final_max_loss_usd
+cap almost regardless of context -- echoing the "8.5% of winning trades lose
+>$50" backtest anecdote from its system prompt near-verbatim, even against a
+perfectly clean $0 P&L / 0-position account. Since a real SPY debit spread
+costs $400-700 per contract (100-share multiplier), a $50 cap makes the
+"approval" impossible to ever execute -- confirmed live three times in a row
+(three different real spreads: $654, $628, $480 per contract, all rejected
+downstream by a $50 cap). _build_user_message() now explicitly tells the
+model proposed_trade_cost_usd is the real per-contract cost and that
+final_max_loss_usd must be sized to actually afford it (or the model should
+VETO outright instead of setting an unexecutable cap). This is a reasoning
+fix, not a hardcoded-threshold change -- no numeric constant in this file
+was altered. Verified in a sandbox test: hard-limit VETO path, normal
+LLM-approval parsing path, and the fail-closed double-invalid-JSON path all
+still behave identically to before this change.
 """
 
 from __future__ import annotations
@@ -136,6 +152,11 @@ def _build_user_message(scout_output: ScoutOutput, ctx: AccountRiskContext) -> s
     # double validation failure -> correct fail-closed VETO, but wasted
     # the LLM call. Spelling out the exact required keys/enum values
     # here (rather than relying on the system prompt alone) fixes this.
+    #
+    # NOTE (2026-09-02): the model also converged on a ~$50 final_max_loss_usd
+    # cap almost regardless of context (see module docstring). The extra
+    # paragraph below explicitly ties final_max_loss_usd to the real
+    # per-contract cost so an APPROVE/APPROVE_MODIFIED is actually executable.
     return (
         "Scout proposal and current account risk context (JSON):\n\n"
         f"{json.dumps(payload, indent=2)}\n\n"
@@ -150,6 +171,15 @@ def _build_user_message(scout_output: ScoutOutput, ctx: AccountRiskContext) -> s
         '"APPROVE_MODIFIED", else 0\n'
         '  "final_max_loss_usd": number > 0 if approved, else 0.0\n'
         '  "final_max_hold_hours": number > 0 if approved, else 0.0\n\n'
+        f'IMPORTANT: proposed_trade_cost_usd above (${ctx.proposed_trade_cost_usd:.2f}) is the '
+        "real estimated per-contract cost of this options spread (100-share multiplier makes "
+        "these expensive -- a typical viable debit spread costs $200-$700 per contract, not a "
+        "few dollars). Do NOT simply restate the $50 backtest tail-risk figure as your cap if "
+        "it is smaller than what a single contract actually costs -- that produces an approval "
+        "that can never be executed. If you APPROVE or APPROVE_MODIFIED, final_max_loss_usd "
+        "must be large enough to cover at least one real contract at its actual cost (a modest "
+        "buffer above proposed_trade_cost_usd is fine). If the trade is genuinely too risky "
+        "given account state, VETO it outright instead of setting an unexecutably small cap.\n\n"
         "No markdown, no code fences, no commentary outside the JSON object. "
         "The decision field is an enum -- use the exact strings listed above, "
         "character for character."
