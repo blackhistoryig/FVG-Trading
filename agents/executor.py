@@ -40,12 +40,32 @@ BUG HISTORY (all confirmed live during this session, not theoretical):
    before reaching ATM/OTM strikes near spot. Fixed by also passing
    --strike-price-gte/-lte, bounding the fetch to a band around the
    underlying price sized off the computed spread width.
+6. (2026-09-02) TWO duplicate pre-trade checks compared Risk Guardian's
+   tactical early-exit stop (final_max_loss_usd) against the FULL
+   theoretical max loss of holding the spread to expiration -- two
+   different numbers by design. This made ANY trade whose stop was
+   smaller than one contract's full cost mathematically impossible to
+   place. Confirmed live: three consecutive real spreads ($654, $628,
+   $480 per contract) were correctly approved by Risk Guardian yet
+   rejected here anyway. Both checks removed; Position Monitor
+   (agents/position_monitor.py, loss_limit_breached()) is the correct
+   enforcement point for final_max_loss_usd as an early exit, not
+   Executor as an entry gate. Alpaca's own buying-power check remains
+   the backstop against a genuinely unaffordable order. Verified via a
+   reconstructed repro test: the exact real spread from an earlier
+   session ($215 max loss/contract) that previously required
+   final_max_loss_usd >= $215 now correctly proceeds to ORDER_SUBMITTED
+   territory with only a $50 cap, without touching the unrelated
+   liquidity/reward-risk/DTE/sanity guardrails.
 
 Integration: on a successful (non-dry-run) order submission, this module
 calls position_monitor.record_submitted_order() so the deterministic
 Position Monitor polling loop can later enforce final_max_loss_usd /
 final_max_hold_hours on the position. See run_executor()'s
-ORDER_SUBMITTED branch.
+ORDER_SUBMITTED branch. Verified (2026-09-02) via a mocked ORDER_SUBMITTED
+run: record_submitted_order() fires exactly once with the correct
+signal_id, symbol, contracts, both OCC leg symbols, final_max_loss_usd,
+and final_max_hold_hours.
 
 Usage:
     from executor import run_executor
@@ -372,8 +392,12 @@ def select_option_contracts(symbol: str, direction: Any, underlying_price: float
 
     if reward_risk < MIN_REWARD_RISK_RATIO:
         return {"_error": f"reward:risk {reward_risk:.2f} below minimum {MIN_REWARD_RISK_RATIO}"}
-    if max_loss_per_contract > max_loss_usd:
-        return {"_error": f"1-contract max loss ${max_loss_per_contract:.2f} exceeds risk cap ${max_loss_usd:.2f} even before sizing"}
+    # FIX (2026-09-02): removed the duplicate "max_loss_per_contract > max_loss_usd" check --
+    # same root bug as run_executor()'s removed total_max_loss check (see that comment for full
+    # detail). This one fired even earlier, before the caller-side check was ever reached, using
+    # max_loss_usd = final_max_loss_usd / position_size_contracts as an equally invalid ceiling
+    # on the position's full structural cost. Position Monitor enforces final_max_loss_usd as an
+    # early-exit stop; it was never meant to gate whether a contract can be entered at all.
 
     return {
         "option_type": option_type, "expiration": chosen_exp.isoformat(), "dte": long_leg["_dte"],
@@ -460,12 +484,26 @@ def run_executor(scout_output: Any, risk_output: Any, dry_run: bool = True) -> d
                            signal_id=signal_id, final_max_hold_hours=final_max_hold_hours).to_dict()
 
     total_max_loss = selection["max_loss_per_contract_usd"] * position_size_contracts
-    if total_max_loss > final_max_loss_usd:
-        reason = (f"sized max loss ${total_max_loss:.2f} ({position_size_contracts} contracts) "
-                  f"exceeds Risk Guardian cap ${final_max_loss_usd:.2f}")
-        log.warning(reason)
-        return ExecResult(action="NO_ORDER", reason=reason, signal_id=signal_id, order_payload=selection,
-                           final_max_hold_hours=final_max_hold_hours).to_dict()
+    # FIX (2026-09-02): removed the old "total_max_loss > final_max_loss_usd" pre-trade
+    # rejection. That check compared Risk Guardian's tactical early-exit stop against the
+    # FULL theoretical max loss of holding the spread to expiration (i.e. the entire premium
+    # paid) -- but those are two different numbers by design. final_max_loss_usd is meant to
+    # be a TIGHTER threshold that Position Monitor uses to close the position early, well
+    # before it could ever reach its full structural max loss. Comparing them here made any
+    # trade with an early-exit stop smaller than one contract's full cost mathematically
+    # impossible to place -- confirmed live: three consecutive real spreads ($654, $628, $480
+    # per contract) were all correctly-approved by Risk Guardian yet rejected here anyway, and
+    # a later Risk Guardian run correctly deduced "no integer contract count can satisfy this"
+    # and vetoed outright -- the LLM was right about a real logic bug, not wrong. Position
+    # Monitor (agents/position_monitor.py, loss_limit_breached()) is the correct enforcement
+    # point for final_max_loss_usd; Alpaca's own buying-power check remains the backstop
+    # against a genuinely unaffordable order.
+    log.info(
+        "Position sizing: %s contract(s) x $%.2f max loss/contract = $%.2f total theoretical "
+        "max loss if held to expiration. Risk Guardian's final_max_loss_usd=$%.2f is an "
+        "early-exit stop enforced by Position Monitor, not a pre-trade ceiling on this number.",
+        position_size_contracts, selection["max_loss_per_contract_usd"], total_max_loss, final_max_loss_usd,
+    )
 
     client_order_id = f"{CLIENT_ORDER_ID_PREFIX}-{signal_id or 'nosig'}-{uuid.uuid4().hex[:8]}"
     order_payload = build_mleg_order(selection, qty=position_size_contracts, client_order_id=client_order_id)
