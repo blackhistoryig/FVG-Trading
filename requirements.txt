@@ -1,3 +1,5 @@
 alpaca-py
 pandas
 pytz
+groq
+pydantic
