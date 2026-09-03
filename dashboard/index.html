@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FVG Copilot — Options Alpha Agent</title>
+<style>
+  :root{
+    --bg:#0b0e14; --panel:rgba(19,23,34,0.55); --panel-solid:#131722; --panel2:#171c29; --border:rgba(255,255,255,0.07);
+    --text:#e6e9f0; --muted:#8b93a7; --green:#3ddc84; --red:#ff5c72;
+    --amber:#ffb547; --accent:#5b8cff;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;line-height:1.5}
+  .aurora{position:fixed;inset:0;z-index:-2;overflow:hidden;background:
+    radial-gradient(ellipse at 20% 0%, rgba(91,140,255,0.08), transparent 50%),
+    radial-gradient(ellipse at 80% 100%, rgba(61,220,132,0.06), transparent 50%), var(--bg)}
+  .aurora::before,.aurora::after{content:"";position:absolute;width:55vw;height:55vw;border-radius:50%;filter:blur(110px);opacity:0.13}
+  .aurora::before{background:#5b8cff;top:-18vw;left:-12vw;animation:drift1 16s ease-in-out infinite alternate}
+  .aurora::after{background:#3ddc84;bottom:-22vw;right:-14vw;animation:drift2 21s ease-in-out infinite alternate}
+  @keyframes drift1{to{transform:translate(7vw,5vh) scale(1.18)}}
+  @keyframes drift2{to{transform:translate(-6vw,-7vh) scale(1.12)}}
+
+  .ticker{position:sticky;top:0;z-index:50;background:rgba(9,12,18,0.82);backdrop-filter:blur(12px);border-bottom:1px solid var(--border);overflow:hidden;white-space:nowrap}
+  .ticker-inner{display:inline-block;padding:9px 0;font-size:0.76rem;color:var(--muted);animation:ticker 45s linear infinite}
+  .ticker:hover .ticker-inner{animation-play-state:paused}
+  .ticker .item{margin:0 22px}
+  .ticker b{color:var(--green);font-weight:700}
+  .ticker .warn{color:var(--amber);font-weight:700}
+  .ticker .neg{color:var(--red);font-weight:700}
+  @keyframes ticker{from{transform:translateX(0)}to{transform:translateX(-50%)}}
+
+  .hero{padding:38px 20px 26px;max-width:1100px;margin:0 auto;border-bottom:1px solid var(--border)}
+  .hero h1{font-size:2.3rem;margin:0 0 6px;letter-spacing:-0.02em}
+  .hero h1 .gt{background:linear-gradient(92deg,#e6e9f0 10%,#3ddc84 60%,#5b8cff);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .hero .tagline{color:var(--muted);margin:0 0 10px;font-size:1.02rem;max-width:680px}
+  .badge{display:inline-block;padding:3px 10px;border-radius:20px;font-size:0.72rem;font-weight:600;margin-right:6px;vertical-align:middle}
+  .badge.live{background:rgba(61,220,132,0.15);color:var(--green);border:1px solid rgba(61,220,132,0.4)}
+  .badge.track{background:rgba(91,140,255,0.13);color:var(--accent);border:1px solid rgba(91,140,255,0.4)}
+  .live-badge{display:none;align-items:center;gap:7px;padding:4px 12px;border-radius:20px;font-size:0.72rem;font-weight:800;letter-spacing:0.04em;background:rgba(61,220,132,0.15);color:var(--green);border:1px solid rgba(61,220,132,0.65);box-shadow:0 0 14px rgba(61,220,132,0.35),inset 0 0 8px rgba(61,220,132,0.1);vertical-align:middle}
+  .live-dot{width:9px;height:9px;border-radius:50%;background:var(--green);box-shadow:0 0 10px #3ddc84;animation:pulse 1.5s infinite}
+  @keyframes pulse{0%,100%{opacity:1;box-shadow:0 0 6px #3ddc84}50%{opacity:0.45;box-shadow:0 0 16px #3ddc84}}
+  .stat-strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-top:18px}
+  .chip{background:var(--panel);backdrop-filter:blur(14px);border:1px solid var(--border);border-radius:12px;padding:14px 16px;position:relative;overflow:hidden;box-shadow:0 8px 28px rgba(0,0,0,0.35)}
+  .chip::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:linear-gradient(180deg,var(--accent),transparent)}
+  .chip.pos::before{background:linear-gradient(180deg,var(--green),transparent)}
+  .chip .cv{font-size:1.55rem;font-weight:800;letter-spacing:-0.01em}
+  .chip.pos .cv{color:var(--green);text-shadow:0 0 18px rgba(61,220,132,0.35)}
+  .chip .cl{color:var(--muted);font-size:0.68rem;text-transform:uppercase;letter-spacing:0.06em;margin-top:3px}
+
+  main{max-width:1100px;margin:0 auto;padding:0 20px 60px}
+  section{margin-top:36px}
+  h2{font-size:1.05rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:14px;font-weight:700}
+  h2 .accent{color:var(--accent)}
+
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}
+  .card{background:var(--panel);backdrop-filter:blur(14px);border:1px solid var(--border);border-radius:12px;padding:16px;box-shadow:0 8px 28px rgba(0,0,0,0.3)}
+  .card .label{color:var(--muted);font-size:0.75rem;text-transform:uppercase;letter-spacing:0.04em;margin-bottom:6px}
+  .card .value{font-size:1.4rem;font-weight:700}
+  .value.pos{color:var(--green);text-shadow:0 0 16px rgba(61,220,132,0.3)}
+  .value.neg{color:var(--red)}
+
+  .live-panel{background:var(--panel);backdrop-filter:blur(14px);border:1px solid var(--border);border-radius:14px;padding:20px;box-shadow:0 10px 36px rgba(0,0,0,0.35)}
+  .live-flex{display:flex;gap:24px;flex-wrap:wrap;align-items:center}
+  .ring-wrap{flex:0 0 auto;text-align:center}
+  .ring{width:150px;height:150px;filter:drop-shadow(0 0 8px rgba(255,181,71,0.35))}
+  .ring-note{font-size:0.68rem;color:var(--muted);margin-top:6px;max-width:170px}
+
+  .pipeline{display:flex;flex-wrap:wrap;gap:12px;align-items:stretch}
+  .stage{flex:1;min-width:150px;background:var(--panel);backdrop-filter:blur(14px);border:1px solid var(--border);border-radius:12px;padding:16px;box-shadow:0 8px 28px rgba(0,0,0,0.3);transition:transform .2s ease, box-shadow .2s ease}
+  .stage:hover{transform:translateY(-3px);box-shadow:0 14px 40px rgba(0,0,0,0.45)}
+  .stage .role{font-size:0.7rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--accent);font-weight:700;margin-bottom:6px}
+  .stage.llm{border-color:rgba(91,140,255,0.45);background:linear-gradient(180deg,rgba(91,140,255,0.10),rgba(19,23,34,0.55))}
+  .stage h3{margin:0 0 6px;font-size:1rem}
+  .stage p{margin:0;color:var(--muted);font-size:0.83rem}
+  .arrow{align-self:center;color:#39415a;font-size:1.4rem;display:flex;align-items:center;padding:0 2px}
+
+  .trade-box{background:var(--panel);backdrop-filter:blur(14px);border:1px solid var(--border);border-radius:14px;padding:20px;box-shadow:0 10px 36px rgba(0,0,0,0.35)}
+  .trade-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-top:16px}
+  .trade-grid .item .k{color:var(--muted);font-size:0.75rem;text-transform:uppercase;letter-spacing:0.03em}
+  .trade-grid .item .v{font-size:0.95rem;font-weight:600;margin-top:2px;word-break:break-word}
+
+  table{width:100%;border-collapse:collapse;background:var(--panel-solid)}
+  th,td{text-align:left;padding:12px 14px;font-size:0.85rem;border-bottom:1px solid var(--border)}
+  th{color:var(--muted);text-transform:uppercase;font-size:0.7rem;letter-spacing:0.04em;background:var(--panel2)}
+  tr:last-child td{border-bottom:none}
+  .table-wrap{overflow-x:auto;border:1px solid var(--border);border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,0.3)}
+  .table-wrap table{border:none}
+  .tag{padding:2px 8px;border-radius:6px;font-size:0.72rem;font-weight:700}
+  .tag.approve{background:rgba(61,220,132,0.15);color:var(--green)}
+  .tag.veto{background:rgba(255,92,114,0.15);color:var(--red);box-shadow:0 0 10px rgba(255,92,114,0.2)}
+  .tag.open{background:rgba(255,181,71,0.15);color:var(--amber)}
+
+  .terminal{background:rgba(8,11,16,0.85);backdrop-filter:blur(10px);border:1px solid #1d2433;border-radius:12px;padding:16px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:0.78rem;line-height:1.75;box-shadow:0 12px 36px rgba(0,0,0,0.45),inset 0 0 40px rgba(91,140,255,0.03)}
+  .tbar{display:flex;gap:6px;align-items:center;border-bottom:1px solid #1d2433;padding-bottom:9px;margin-bottom:11px;color:#5f6879;font-size:0.72rem}
+  .tdot{width:10px;height:10px;border-radius:50%;display:inline-block}
+  .ok{color:var(--green)}.warn{color:var(--amber)}.err{color:var(--red)}.mut{color:var(--muted)}.cmd{color:#e6e9f0;font-weight:700}
+  .note{background:var(--panel2);border:1px dashed var(--border);border-radius:8px;padding:12px 14px;color:var(--muted);font-size:0.82rem;margin-top:14px}
+  .countdown{font-variant-numeric:tabular-nums;color:var(--amber);border-color:rgba(255,181,71,0.35)}
+
+  .chart-panel{background:var(--panel);backdrop-filter:blur(14px);border:1px solid var(--border);border-radius:14px;padding:20px;box-shadow:0 10px 36px rgba(0,0,0,0.35)}
+  .chart-title{font-size:0.9rem;font-weight:700;margin-bottom:4px}
+  .chart-sub{color:var(--muted);font-size:0.78rem;margin-bottom:14px}
+  .donut-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px}
+  .donut-cell{background:var(--panel);backdrop-filter:blur(14px);border:1px solid var(--border);border-radius:12px;padding:18px;display:flex;gap:16px;align-items:center;box-shadow:0 8px 28px rgba(0,0,0,0.3)}
+  .donut-cell svg{flex:0 0 120px;filter:drop-shadow(0 0 6px rgba(61,220,132,0.25))}
+  .donut-cell .dt{font-size:0.9rem;font-weight:700}
+  .donut-cell .dd{color:var(--muted);font-size:0.78rem;margin-top:4px}
+  .chart-panel svg[aria-label]{filter:drop-shadow(0 0 5px rgba(61,220,132,0.18))}
+  .chart-panel rect{transform-box:fill-box;animation:grow .9s cubic-bezier(.2,.8,.3,1) both}
+  .chart-panel rect[fill="url(#gpos)"]{transform-origin:left center}
+  .chart-panel rect[fill="url(#gneg)"]{transform-origin:right center}
+  @keyframes grow{from{transform:scaleX(0)}}
+
+  .stack-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
+  .stack-pill{background:var(--panel);backdrop-filter:blur(10px);border:1px solid var(--border);border-radius:20px;padding:5px 14px;font-size:0.75rem;color:var(--muted)}
+  .stack-pill b{color:var(--text);font-weight:600}
+
+  footer{max-width:1100px;margin:0 auto;padding:24px 20px;color:var(--muted);font-size:0.8rem;border-top:1px solid var(--border)}
+  .stamp{font-size:0.75rem;color:var(--muted);margin-top:4px}
+  a{color:var(--accent)}
+  .btn-row{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}
+  .btn{display:inline-block;padding:9px 18px;border-radius:10px;font-size:0.85rem;font-weight:700;text-decoration:none;transition:transform .15s ease, box-shadow .15s ease}
+  .btn:hover{transform:translateY(-2px)}
+  .btn.primary{background:linear-gradient(92deg,#2ba868,#3ddc84);color:#08130c;box-shadow:0 6px 20px rgba(61,220,132,0.3)}
+  .btn.ghost{background:var(--panel);border:1px solid var(--border);color:var(--text)}
+</style>
+</head>
+<body>
+<div class="aurora"></div>
+
+<div class="ticker"><div class="ticker-inner">
+<span class="item">SPY <b>765/775 CALL SPREAD</b> · LIVE NET <b>+$60</b></span>
+<span class="item">2,786 SIGNALS SCANNED &rarr; <b>1,569 PRICEABLE TRADES</b></span>
+<span class="item">16/30 POSITIVE MONTHS · BEST MONTH <b>JUN 2026 +$1,937</b> · WORST <span class="neg">MAR 2026 -$991</span></span>
+<span class="item">BEST TRADE <b>+$2,048</b> (QQQ) · WORST <span class="neg">-$421</span></span>
+<span class="item">AVG WIN <b>$42.33</b> · AVG LOSS $38.97 · PAYOFF <b>1.09:1</b></span>
+<span class="item">STRONGEST SIGNAL: <b>QQQ PUTS +$7.84/TRADE</b> (n=214)</span>
+<span class="item">RISK GUARDIAN STOP <span class="warn">$580 / 24H</span></span>
+<span class="item">ALPACA PAPER · DEDICATED $100K ACCOUNT · OPTIONS LVL 3</span>
+<span class="item">SPY <b>765/775 CALL SPREAD</b> · LIVE NET <b>+$60</b></span>
+<span class="item">2,786 SIGNALS SCANNED &rarr; <b>1,569 PRICEABLE TRADES</b></span>
+<span class="item">16/30 POSITIVE MONTHS · BEST MONTH <b>JUN 2026 +$1,937</b> · WORST <span class="neg">MAR 2026 -$991</span></span>
+<span class="item">BEST TRADE <b>+$2,048</b> (QQQ) · WORST <span class="neg">-$421</span></span>
+<span class="item">AVG WIN <b>$42.33</b> · AVG LOSS $38.97 · PAYOFF <b>1.09:1</b></span>
+<span class="item">STRONGEST SIGNAL: <b>QQQ PUTS +$7.84/TRADE</b> (n=214)</span>
+<span class="item">RISK GUARDIAN STOP <span class="warn">$580 / 24H</span></span>
+<span class="item">ALPACA PAPER · DEDICATED $100K ACCOUNT · OPTIONS LVL 3</span>
+</div></div>
+
+<div class="hero">
+  <h1>FVG <span class="gt">Copilot</span> <span class="badge track">OPTIONS ALPHA AGENTS</span><span class="badge live">LIVE ON ALPACA PAPER</span><span class="live-badge" id="live-badge"><span class="live-dot"></span>LIVE DATA</span></h1>
+  <p class="tagline">A deterministic Fair Value Gap trading engine governed by AI agents &mdash; an LLM Scout builds the thesis, an LLM Risk Guardian with hard-coded limits can veto it, a deterministic Executor trades real options on Alpaca.</p>
+  <div class="stat-strip">
+    <div class="chip pos"><div class="cv">+$1,295</div><div class="cl">Backtest P&L</div></div>
+    <div class="chip"><div class="cv">48.9%</div><div class="cl">Win Rate</div></div>
+    <div class="chip"><div class="cv">1,569</div><div class="cl">Clean Trades</div></div>
+    <div class="chip"><div class="cv">1.09:1</div><div class="cl">Payoff Ratio</div></div>
+    <div class="chip pos"><div class="cv" id="hero-netpl">+$60</div><div class="cl">Live Spread P&L</div></div>
+    <div class="chip"><div class="cv" id="hero-pv">&mdash;</div><div class="cl">Account Value (Live)</div></div>
+  </div>
+</div>
+
+<main>
+  <section>
+    <h2>Live Now <span class="accent">&mdash; lablab hackathon account (paper, $100k)</span></h2>
+    <div class="note" id="live-error" style="display:none"></div>
+    <div class="live-panel">
+      <div class="live-flex">
+        <div class="ring-wrap">
+          <svg viewBox="0 0 140 140" class="ring" role="img" aria-label="hold-time countdown">
+            <circle cx="70" cy="70" r="54" stroke="#232938" stroke-width="9" fill="none"/>
+            <circle id="ring-arc" cx="70" cy="70" r="54" stroke="#ffb547" stroke-width="9" fill="none" stroke-linecap="round" stroke-dasharray="339.3 339.3" transform="rotate(-90 70 70)"/>
+            <text id="ring-time" x="70" y="68" text-anchor="middle" fill="#e6e9f0" font-size="19" font-weight="700" font-family="-apple-system,sans-serif">--:--:--</text>
+            <text x="70" y="86" text-anchor="middle" fill="#8b93a7" font-size="8.5" font-family="-apple-system,sans-serif" letter-spacing="1">HOLD-TIME CAP</text>
+          </svg>
+          <div class="ring-note">Risk Guardian 24h hold cap &mdash; Position Monitor auto-closes at 12:07 PM PDT</div>
+        </div>
+        <div style="flex:1;min-width:260px">
+          <div class="cards">
+            <div class="card"><div class="label">Portfolio Value</div><div class="value" id="pv">&mdash;</div></div>
+            <div class="card"><div class="label">Unrealized P&L</div><div class="value" id="daypl">&mdash;</div></div>
+            <div class="card"><div class="label">Cash</div><div class="value" id="cash">&mdash;</div></div>
+            <div class="card"><div class="label">Spread Net P&L</div><div class="value pos" id="netpl">+$60</div></div>
+          </div>
+        </div>
+      </div>
+      <div class="note countdown" id="countdown" style="display:none"></div>
+      <div class="table-wrap" style="margin-top:14px">
+        <table>
+          <thead><tr><th>Symbol</th><th>Side</th><th>Qty</th><th>Avg Entry</th><th>Current</th><th>Unrealized P&L</th></tr></thead>
+          <tbody id="positions-body">
+            <tr><td>SPY260916C00765000</td><td>long</td><td>1</td><td>$7.37</td><td>&mdash;</td><td style="color:var(--green)">+$158</td></tr>
+            <tr><td>SPY260916C00775000</td><td>short</td><td>-1</td><td>$2.56</td><td>&mdash;</td><td style="color:var(--red)">-$98</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="note">Fallback values are the last verified snapshot (Sep 3, ~7:08 AM PDT via live Alpaca CLI check) &mdash; replaced by live data automatically. Page polls every 60 seconds.</div>
+    </div>
+  </section>
+
+  <section>
+    <h2>The Live Trade <span class="accent">&mdash; SPY debit call spread, placed by the agents</span></h2>
+    <div class="trade-box">
+      <div class="cards" style="margin-bottom:4px">
+        <div class="card"><div class="label">Net Debit Paid</div><div class="value">$481</div></div>
+        <div class="card"><div class="label">Risk Guardian Stop</div><div class="value">$580 / 24h</div></div>
+        <div class="card"><div class="label">Max Profit</div><div class="value pos">$519</div></div>
+        <div class="card"><div class="label">Status</div><div class="value" style="font-size:1.1rem"><span class="tag open" id="pos-status">OPEN &mdash; MONITORED</span></div></div>
+      </div>
+      <div class="stamp" id="asof" style="font-size:0.75rem;color:var(--muted)">Snapshot: Sep 3, ~7:08 AM PDT (live polling pending)</div>
+      <div class="trade-grid">
+        <div class="item"><div class="k">Order ID</div><div class="v">c49e917f-5ad5-404a-bdfe-5af3524dcb0a</div></div>
+        <div class="item"><div class="k">Long Leg</div><div class="v">SPY260916C00765000 @ $7.37</div></div>
+        <div class="item"><div class="k">Short Leg</div><div class="v">SPY260916C00775000 @ $2.56</div></div>
+        <div class="item"><div class="k">Spread Width</div><div class="v">$10 wide</div></div>
+        <div class="item"><div class="k">Reward:Risk</div><div class="v">~1.08:1</div></div>
+        <div class="item"><div class="k">Filled</div><div class="v">Sep 2, 2026 · 12:07:12 PM PDT</div></div>
+      </div>
+    </div>
+    <div style="margin-top:14px"></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Submitted</th><th>Symbol</th><th>Side</th><th>Qty</th><th>Status</th><th>Filled Avg</th></tr></thead>
+        <tbody id="orders-body">
+          <tr><td>Sep 2, 12:07 PM PDT</td><td>SPY260916C00765000 / SPY260916C00775000</td><td>buy / sell</td><td>1</td><td>filled</td><td>$4.81 net</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Agent Reasoning <span class="accent">&mdash; actual pipeline transcripts</span></h2>
+    <div class="terminal">
+      <div class="tbar"><span class="tdot" style="background:#ff5c72"></span><span class="tdot" style="background:#ffb547"></span><span class="tdot" style="background:#3ddc84"></span>&nbsp;fvg-copilot &mdash; scout / risk_guardian / executor / position_monitor</div>
+      <div><span class="mut">></span> <span class="cmd">scout --signal SPY-LIVE-FIRST-REAL</span><br>
+      <span class="mut">thesis:</span> &ldquo;confirmed market structure shift and strong displacement suggests upward pressure toward the measured move target&rdquo;<br>
+      <span class="mut">confidence:</span> <span class="ok">0.78</span> <span class="mut">· structure:</span> debit_call_spread</div>
+      <div style="margin-top:10px"><span class="mut">></span> <span class="cmd">risk_guardian --review</span><br>
+      <span class="err">[VETO · Sep 1]</span> <span class="mut">&mdash;</span> daily P&L &minus;$50 + backtest tail stat &ldquo;8.5% of winning trades lose >$50&rdquo; &rarr; Scout&rsquo;s $300 loss ceiling rejected. <span class="mut">Executor: NO_ORDER, 0 wasted calls.</span><br>
+      <span class="ok">[APPROVE_MODIFIED · Sep 2]</span> <span class="mut">&mdash;</span> &ldquo;$480/contract&hellip; stop must cover the full debit plus tail risk&hellip; $580, 24h hold&rdquo; &rarr; <span class="ok">Executor: order placed, both legs filled in ~100ms.</span></div>
+      <div style="margin-top:10px"><span class="mut">></span> <span class="cmd">position_monitor --watch</span><br>
+      <span class="mut">enforcing</span> max_loss=<span class="warn">$580</span> <span class="mut">·</span> max_hold=<span class="warn">24h</span> <span class="mut">· polling live Alpaca positions</span></div>
+    </div>
+    <div style="margin-top:14px"></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Timestamp</th><th>Signal</th><th>Scout</th><th>Risk Guardian</th><th>Executor</th></tr></thead>
+        <tbody>
+          <tr><td>Sep 1, ~9:44 PM PDT</td><td>Bullish SPY FVG, spot $762.15, target $777</td><td>debit_call_spread, confidence 0.78</td><td><span class="tag veto">VETO</span> $300 loss vs. -$50 daily P&L: unacceptable per backtest tail-risk stat</td><td>NO_ORDER (correct no-op)</td></tr>
+          <tr><td>Sep 2, ~12:01 PM PDT</td><td>Bullish SPY FVG, spot $765.18, target $773.18</td><td>debit_call_spread, confidence 0.78</td><td><span class="tag approve">APPROVE_MODIFIED</span> $580 cap set (cost-aware: spread costs $480/contract, stop must cover full debit + tail-risk buffer)</td><td>Order built: long 765C / short 775C, 1 contract, dry_run=true</td></tr>
+          <tr><td>Sep 2, 12:07:12 PM PDT</td><td>Same signal, live submission</td><td>&mdash;</td><td>Same as above (real run)</td><td><span class="tag approve">FILLED</span> Real Alpaca order c49e917f&hellip;, both legs filled simultaneously (~100ms)</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>How It Works <span class="accent">&mdash; deterministic math, AI judgment, nothing blurred</span></h2>
+    <div class="pipeline">
+      <div class="stage"><div class="role">Deterministic core</div><h3>FVG Engine</h3><p>ATR-based gap filter, MSS + displacement confirmation. Fires the raw directional signal.</p></div>
+      <div class="arrow">&#8594;</div>
+      <div class="stage llm"><div class="role">LLM Agent · Groq</div><h3>Scout</h3><p>Contextualizes the FVG signal into a structured thesis + confidence score (openai/gpt-oss-120b).</p></div>
+      <div class="arrow">&#8594;</div>
+      <div class="stage llm"><div class="role">LLM + Rules Agent</div><h3>Risk Guardian</h3><p>Hard limits in plain code first (fail-closed), then Groq reasoning. Sets the real stop-loss / hold-time cap, can veto outright.</p></div>
+      <div class="arrow">&#8594;</div>
+      <div class="stage"><div class="role">Deterministic script</div><h3>Executor</h3><p>Alpaca CLI. Target-aware debit-spread strike selection, multi-leg order placement. No LLM in this step.</p></div>
+      <div class="arrow">&#8594;</div>
+      <div class="stage"><div class="role">Deterministic script</div><h3>Position Monitor</h3><p>Polls the open position against Risk Guardian's max-loss / max-hold-time and auto-closes when either trips.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Built the Hard Way <span class="accent">&mdash; 11 real bugs found live, fixed, committed</span></h2>
+    <div class="cards">
+      <div class="card"><div class="label">Silent Misroute Bug</div><div class="value" style="font-size:0.95rem">str(Enum) would have flipped every bullish signal into a put spread &mdash; caught by schema-diffing before the first live run</div></div>
+      <div class="card"><div class="label">Cost-Blind Veto Bug</div><div class="value" style="font-size:0.95rem">Risk Guardian set a $50 cap no real spread could satisfy &mdash; found only by running against real Groq, fixed in the prompt contract</div></div>
+      <div class="card"><div class="label">Zero-Collision Filter</div><div class="value" style="font-size:0.95rem">43.7% of backtest trades priced entry & exit off the same bar, faking $0 P&L &mdash; skepticism caught it, not luck</div></div>
+      <div class="card"><div class="label">Live Chain Quirks</div><div class="value" style="font-size:0.95rem">0DTE-only default pages, quotes above spot, strike-window exhaustion &mdash; every one hit live, fixed, and committed separately</div></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Backtest Evidence <span class="accent">&mdash; 2.5 years, real Alpaca options prices</span></h2>
+    <div class="chart-panel">
+      <div class="chart-title">Cumulative Backtest P&L &mdash; 1,569 clean trades</div>
+      <div class="chart-sub">Mar 2024 &ndash; Aug 2026 · SPY / QQQ / XLV / XLF / IWM. Not a smooth rocket: the strategy dug a -$1,957 hole through 2024, peaked at +$2,090, and survived a -$2,179 peak-to-trough drawdown before finishing +$1,295. We show the drawdowns because that&rsquo;s the honest curve.</div>
+      <svg viewBox="0 0 900 300" role="img" aria-label="Cumulative backtest P&L equity curve" style="width:100%;height:auto;display:block">
+<defs>
+  <clipPath id="clipUp"><rect x="0" y="0" width="900" height="140.0"/></clipPath>
+  <clipPath id="clipDn"><rect x="0" y="140.0" width="900" height="160.0"/></clipPath>
+  <linearGradient id="eqUp" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3ddc84" stop-opacity="0.35"/><stop offset="1" stop-color="#3ddc84" stop-opacity="0.02"/></linearGradient>
+  <linearGradient id="eqDn" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ff5c72" stop-opacity="0.06"/><stop offset="1" stop-color="#ff5c72" stop-opacity="0.32"/></linearGradient>
+</defs>
+<line x1="55" y1="140.0" x2="875" y2="140.0" stroke="#39415a" stroke-width="1" stroke-dasharray="4 4"/>
+<path d="M55.0,137.8 L61.8,158.8 L68.6,170.6 L75.3,166.4 L82.1,169.7 L88.9,163.1 L95.7,178.7 L102.4,192.0 L109.2,197.1 L116.0,196.9 L122.8,185.6 L129.5,191.2 L136.3,195.2 L143.1,193.1 L149.9,202.7 L156.7,191.3 L163.4,184.9 L170.2,183.6 L177.0,180.8 L183.8,179.6 L190.5,167.2 L197.3,186.9 L204.1,196.3 L210.9,194.0 L217.6,206.4 L224.4,205.7 L231.2,201.3 L238.0,206.6 L244.8,203.9 L251.5,207.9 L258.3,213.8 L265.1,213.4 L271.9,211.2 L278.6,224.2 L285.4,236.1 L292.2,231.6 L299.0,233.4 L305.7,225.2 L312.5,219.0 L319.3,227.3 L326.1,218.7 L332.9,215.9 L339.6,206.1 L346.4,197.9 L353.2,203.5 L360.0,184.6 L366.7,183.9 L373.5,184.5 L380.3,191.3 L387.1,215.6 L393.8,229.5 L400.6,233.5 L407.4,242.4 L414.2,90.2 L421.0,108.6 L427.7,100.1 L434.5,101.9 L441.3,105.7 L448.1,105.5 L454.8,114.0 L461.6,105.9 L468.4,113.9 L475.2,106.6 L481.9,103.8 L488.7,96.0 L495.5,107.4 L502.3,110.8 L509.0,110.8 L515.8,101.7 L522.6,104.2 L529.4,99.5 L536.2,99.5 L542.9,105.7 L549.7,112.9 L556.5,121.2 L563.3,119.0 L570.0,112.1 L576.8,93.3 L583.6,68.2 L590.4,67.5 L597.1,61.8 L603.9,49.1 L610.7,54.5 L617.5,65.8 L624.3,48.5 L631.0,55.6 L637.8,63.4 L644.6,63.1 L651.4,48.2 L658.1,58.5 L664.9,67.9 L671.7,64.7 L678.5,57.7 L685.2,103.0 L692.0,90.8 L698.8,96.1 L705.6,79.2 L712.4,123.7 L719.1,140.4 L725.9,146.9 L732.7,143.5 L739.5,120.0 L746.2,109.6 L753.0,113.0 L759.8,99.7 L766.6,121.7 L773.3,124.5 L780.1,145.7 L786.9,122.6 L793.7,42.3 L800.5,45.5 L807.2,38.5 L814.0,51.4 L820.8,62.2 L827.6,83.1 L834.3,72.3 L841.1,91.8 L847.9,52.9 L854.7,30.3 L861.4,71.1 L868.2,71.7 L875.0,70.5 L875.0,140.0 L55.0,140.0 Z" clip-path="url(#clipUp)" fill="url(#eqUp)"/>
+<path d="M55.0,137.8 L61.8,158.8 L68.6,170.6 L75.3,166.4 L82.1,169.7 L88.9,163.1 L95.7,178.7 L102.4,192.0 L109.2,197.1 L116.0,196.9 L122.8,185.6 L129.5,191.2 L136.3,195.2 L143.1,193.1 L149.9,202.7 L156.7,191.3 L163.4,184.9 L170.2,183.6 L177.0,180.8 L183.8,179.6 L190.5,167.2 L197.3,186.9 L204.1,196.3 L210.9,194.0 L217.6,206.4 L224.4,205.7 L231.2,201.3 L238.0,206.6 L244.8,203.9 L251.5,207.9 L258.3,213.8 L265.1,213.4 L271.9,211.2 L278.6,224.2 L285.4,236.1 L292.2,231.6 L299.0,233.4 L305.7,225.2 L312.5,219.0 L319.3,227.3 L326.1,218.7 L332.9,215.9 L339.6,206.1 L346.4,197.9 L353.2,203.5 L360.0,184.6 L366.7,183.9 L373.5,184.5 L380.3,191.3 L387.1,215.6 L393.8,229.5 L400.6,233.5 L407.4,242.4 L414.2,90.2 L421.0,108.6 L427.7,100.1 L434.5,101.9 L441.3,105.7 L448.1,105.5 L454.8,114.0 L461.6,105.9 L468.4,113.9 L475.2,106.6 L481.9,103.8 L488.7,96.0 L495.5,107.4 L502.3,110.8 L509.0,110.8 L515.8,101.7 L522.6,104.2 L529.4,99.5 L536.2,99.5 L542.9,105.7 L549.7,112.9 L556.5,121.2 L563.3,119.0 L570.0,112.1 L576.8,93.3 L583.6,68.2 L590.4,67.5 L597.1,61.8 L603.9,49.1 L610.7,54.5 L617.5,65.8 L624.3,48.5 L631.0,55.6 L637.8,63.4 L644.6,63.1 L651.4,48.2 L658.1,58.5 L664.9,67.9 L671.7,64.7 L678.5,57.7 L685.2,103.0 L692.0,90.8 L698.8,96.1 L705.6,79.2 L712.4,123.7 L719.1,140.4 L725.9,146.9 L732.7,143.5 L739.5,120.0 L746.2,109.6 L753.0,113.0 L759.8,99.7 L766.6,121.7 L773.3,124.5 L780.1,145.7 L786.9,122.6 L793.7,42.3 L800.5,45.5 L807.2,38.5 L814.0,51.4 L820.8,62.2 L827.6,83.1 L834.3,72.3 L841.1,91.8 L847.9,52.9 L854.7,30.3 L861.4,71.1 L868.2,71.7 L875.0,70.5 L875.0,140.0 L55.0,140.0 Z" clip-path="url(#clipDn)" fill="url(#eqDn)"/>
+<path d="M55.0,137.8 L61.8,158.8 L68.6,170.6 L75.3,166.4 L82.1,169.7 L88.9,163.1 L95.7,178.7 L102.4,192.0 L109.2,197.1 L116.0,196.9 L122.8,185.6 L129.5,191.2 L136.3,195.2 L143.1,193.1 L149.9,202.7 L156.7,191.3 L163.4,184.9 L170.2,183.6 L177.0,180.8 L183.8,179.6 L190.5,167.2 L197.3,186.9 L204.1,196.3 L210.9,194.0 L217.6,206.4 L224.4,205.7 L231.2,201.3 L238.0,206.6 L244.8,203.9 L251.5,207.9 L258.3,213.8 L265.1,213.4 L271.9,211.2 L278.6,224.2 L285.4,236.1 L292.2,231.6 L299.0,233.4 L305.7,225.2 L312.5,219.0 L319.3,227.3 L326.1,218.7 L332.9,215.9 L339.6,206.1 L346.4,197.9 L353.2,203.5 L360.0,184.6 L366.7,183.9 L373.5,184.5 L380.3,191.3 L387.1,215.6 L393.8,229.5 L400.6,233.5 L407.4,242.4 L414.2,90.2 L421.0,108.6 L427.7,100.1 L434.5,101.9 L441.3,105.7 L448.1,105.5 L454.8,114.0 L461.6,105.9 L468.4,113.9 L475.2,106.6 L481.9,103.8 L488.7,96.0 L495.5,107.4 L502.3,110.8 L509.0,110.8 L515.8,101.7 L522.6,104.2 L529.4,99.5 L536.2,99.5 L542.9,105.7 L549.7,112.9 L556.5,121.2 L563.3,119.0 L570.0,112.1 L576.8,93.3 L583.6,68.2 L590.4,67.5 L597.1,61.8 L603.9,49.1 L610.7,54.5 L617.5,65.8 L624.3,48.5 L631.0,55.6 L637.8,63.4 L644.6,63.1 L651.4,48.2 L658.1,58.5 L664.9,67.9 L671.7,64.7 L678.5,57.7 L685.2,103.0 L692.0,90.8 L698.8,96.1 L705.6,79.2 L712.4,123.7 L719.1,140.4 L725.9,146.9 L732.7,143.5 L739.5,120.0 L746.2,109.6 L753.0,113.0 L759.8,99.7 L766.6,121.7 L773.3,124.5 L780.1,145.7 L786.9,122.6 L793.7,42.3 L800.5,45.5 L807.2,38.5 L814.0,51.4 L820.8,62.2 L827.6,83.1 L834.3,72.3 L841.1,91.8 L847.9,52.9 L854.7,30.3 L861.4,71.1 L868.2,71.7 L875.0,70.5" fill="none" stroke="#3ddc84" stroke-width="2" stroke-linejoin="round"/>
+<circle cx="875.0" cy="70.5" r="5" fill="#3ddc84" filter="drop-shadow(0 0 6px rgba(61,220,132,0.8))"/>
+<text x="861.0" y="58.5" text-anchor="end" fill="#3ddc84" font-size="20" font-weight="800" font-family="-apple-system,sans-serif">+$1,295</text>
+<text x="55" y="26.0" fill="#8b93a7" font-size="10" font-family="-apple-system,sans-serif">+$2,090 PEAK</text>
+<text x="55" y="256.0" fill="#8b93a7" font-size="10" font-family="-apple-system,sans-serif">-$1,957 TROUGH</text>
+<text x="55" y="134.0" fill="#5f6879" font-size="10" font-family="-apple-system,sans-serif">$0</text>
+<text x="55" y="294" fill="#5f6879" font-size="10" font-family="-apple-system,sans-serif">MAR 2024</text>
+<text x="465" y="294" text-anchor="middle" fill="#5f6879" font-size="10" font-family="-apple-system,sans-serif">2025</text>
+<text x="875" y="294" text-anchor="end" fill="#5f6879" font-size="10" font-family="-apple-system,sans-serif">AUG 2026</text>
+</svg>
+    </div>
+    <div style="margin-top:14px"></div>
+    <div class="donut-row">
+      <div class="donut-cell">
+        <svg viewBox="0 0 160 160" role="img" aria-label="win rate">
+          <circle cx="80" cy="80" r="62" fill="none" stroke="#232938" stroke-width="20"/>
+          <circle cx="80" cy="80" r="62" fill="none" stroke="#5a2634" stroke-width="20" stroke-dasharray="389.6 389.6" transform="rotate(-90 80 80)"/>
+          <circle cx="80" cy="80" r="62" fill="none" stroke="#3ddc84" stroke-width="20" stroke-dasharray="190.5 389.6" stroke-linecap="round" transform="rotate(-90 80 80)"/>
+          <text x="80" y="76" text-anchor="middle" fill="#e6e9f0" font-size="26" font-weight="700" font-family="-apple-system,sans-serif">48.9%</text>
+          <text x="80" y="96" text-anchor="middle" fill="#8b93a7" font-size="11" font-family="-apple-system,sans-serif">WIN RATE</text>
+        </svg>
+        <div><div class="dt">48.9% Win Rate</div><div class="dd">768 profitable / 801 losing trades across 1,569 clean trades. Avg win $42.33 vs avg loss $38.97 &mdash; a believable, unglamorous options profile, not an overfit curve.</div></div>
+      </div>
+      <div class="donut-cell">
+        <svg viewBox="0 0 160 160" role="img" aria-label="tail risk">
+          <circle cx="80" cy="80" r="62" fill="none" stroke="#232938" stroke-width="20"/>
+          <circle cx="80" cy="80" r="62" fill="none" stroke="#5a2634" stroke-width="20" stroke-dasharray="389.6 389.6" transform="rotate(-90 80 80)"/>
+          <circle cx="80" cy="80" r="62" fill="none" stroke="#3ddc84" stroke-width="20" stroke-dasharray="75.6 389.6" stroke-linecap="round" transform="rotate(-90 80 80)"/>
+          <text x="80" y="76" text-anchor="middle" fill="#e6e9f0" font-size="26" font-weight="700" font-family="-apple-system,sans-serif">19.4%</text>
+          <text x="80" y="96" text-anchor="middle" fill="#8b93a7" font-size="11" font-family="-apple-system,sans-serif">OF WINS LOSE >$20</text>
+        </svg>
+        <div><div class="dt">Why the Risk Guardian Exists</div><div class="dd">19.4% of winning underlying signals still lost >$20 on the options leg (8.5% lost >$50). Directional accuracy is not trade quality &mdash; so the Risk Guardian sets independent loss / hold-time stops.</div></div>
+      </div>
+    </div>
+    <div style="margin-top:14px"></div>
+    <div class="chart-panel">
+      <div class="chart-title">Mean P&L per trade &mdash; symbol &times; direction</div>
+      <div class="chart-sub">Clean dataset, real historical Alpaca options prices (intraday hourly bars, target-aware strikes). QQQ puts are the strongest replicated signal; the live strategy stays symmetric across all directions and symbols.</div>
+      <svg viewBox="0 0 660 348" role="img" aria-label="Mean P&L per trade by symbol and direction" style="width:100%;height:auto">
+        <defs>
+          <linearGradient id="gpos" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#2ba868"/><stop offset="1" stop-color="#3ddc84"/></linearGradient>
+          <linearGradient id="gneg" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#ff5c72"/><stop offset="1" stop-color="#c73b50"/></linearGradient>
+        </defs>
+        <line x1="300" y1="0" x2="300" y2="344" stroke="#39415a" stroke-width="1"/>
+        <text x="140" y="25" text-anchor="end" fill="#c3c9d6" font-size="13" font-family="-apple-system,sans-serif">QQQ · SELL (puts)</text>
+        <text x="140" y="36" text-anchor="end" fill="#5f6879" font-size="9" font-family="-apple-system,sans-serif">n=214</text>
+        <rect x="300" y="11" width="245.0" height="18" rx="4" fill="url(#gpos)"/><text x="553.0" y="25" fill="#3ddc84" font-size="13" font-weight="600" font-family="-apple-system,sans-serif">+$7.84</text>
+        <text x="140" y="59" text-anchor="end" fill="#c3c9d6" font-size="13" font-family="-apple-system,sans-serif">IWM · SELL</text>
+        <text x="140" y="70" text-anchor="end" fill="#5f6879" font-size="9" font-family="-apple-system,sans-serif">n=192</text>
+        <rect x="300" y="45" width="39.4" height="18" rx="4" fill="url(#gpos)"/><text x="347.4" y="59" fill="#3ddc84" font-size="13" font-weight="600" font-family="-apple-system,sans-serif">+$1.26</text>
+        <text x="140" y="93" text-anchor="end" fill="#c3c9d6" font-size="13" font-family="-apple-system,sans-serif">XLF · SELL</text>
+        <text x="140" y="104" text-anchor="end" fill="#5f6879" font-size="9" font-family="-apple-system,sans-serif">n=94</text>
+        <rect x="300" y="79" width="36.6" height="18" rx="4" fill="url(#gpos)"/><text x="344.6" y="93" fill="#3ddc84" font-size="13" font-weight="600" font-family="-apple-system,sans-serif">+$1.17</text>
+        <text x="140" y="127" text-anchor="end" fill="#c3c9d6" font-size="13" font-family="-apple-system,sans-serif">XLF · BUY</text>
+        <text x="140" y="138" text-anchor="end" fill="#5f6879" font-size="9" font-family="-apple-system,sans-serif">n=127</text>
+        <rect x="300" y="113" width="12.5" height="18" rx="4" fill="url(#gpos)"/><text x="320.5" y="127" fill="#3ddc84" font-size="13" font-weight="600" font-family="-apple-system,sans-serif">+$0.40</text>
+        <text x="140" y="161" text-anchor="end" fill="#c3c9d6" font-size="13" font-family="-apple-system,sans-serif">XLV · SELL</text>
+        <text x="140" y="172" text-anchor="end" fill="#5f6879" font-size="9" font-family="-apple-system,sans-serif">n=54</text>
+        <rect x="300" y="147" width="8.1" height="18" rx="4" fill="url(#gpos)"/><text x="316.1" y="161" fill="#3ddc84" font-size="13" font-weight="600" font-family="-apple-system,sans-serif">+$0.26</text>
+        <text x="140" y="195" text-anchor="end" fill="#c3c9d6" font-size="13" font-family="-apple-system,sans-serif">XLV · BUY</text>
+        <text x="140" y="206" text-anchor="end" fill="#5f6879" font-size="9" font-family="-apple-system,sans-serif">n=77</text>
+        <rect x="300" y="181" width="1.2" height="18" rx="4" fill="url(#gpos)"/><text x="309.2" y="195" fill="#3ddc84" font-size="13" font-weight="600" font-family="-apple-system,sans-serif">+$0.04</text>
+        <text x="140" y="229" text-anchor="end" fill="#c3c9d6" font-size="13" font-family="-apple-system,sans-serif">SPY · BUY</text>
+        <text x="140" y="240" text-anchor="end" fill="#5f6879" font-size="9" font-family="-apple-system,sans-serif">n=206</text>
+        <rect x="295.0" y="215" width="5.0" height="18" rx="4" fill="url(#gneg)"/><text x="287.0" y="229" text-anchor="end" fill="#ff5c72" font-size="13" font-weight="600" font-family="-apple-system,sans-serif">-$0.16</text>
+        <text x="140" y="263" text-anchor="end" fill="#c3c9d6" font-size="13" font-family="-apple-system,sans-serif">SPY · SELL</text>
+        <text x="140" y="274" text-anchor="end" fill="#5f6879" font-size="9" font-family="-apple-system,sans-serif">n=222</text>
+        <rect x="281.6" y="249" width="18.4" height="18" rx="4" fill="url(#gneg)"/><text x="273.6" y="263" text-anchor="end" fill="#ff5c72" font-size="13" font-weight="600" font-family="-apple-system,sans-serif">-$0.59</text>
+        <text x="140" y="297" text-anchor="end" fill="#c3c9d6" font-size="13" font-family="-apple-system,sans-serif">QQQ · BUY</text>
+        <text x="140" y="308" text-anchor="end" fill="#5f6879" font-size="9" font-family="-apple-system,sans-serif">n=199</text>
+        <rect x="262.5" y="283" width="37.5" height="18" rx="4" fill="url(#gneg)"/><text x="254.5" y="297" text-anchor="end" fill="#ff5c72" font-size="13" font-weight="600" font-family="-apple-system,sans-serif">-$1.20</text>
+        <text x="140" y="331" text-anchor="end" fill="#c3c9d6" font-size="13" font-family="-apple-system,sans-serif">IWM · BUY</text>
+        <text x="140" y="342" text-anchor="end" fill="#5f6879" font-size="9" font-family="-apple-system,sans-serif">n=184</text>
+        <rect x="231.9" y="317" width="68.1" height="18" rx="4" fill="url(#gneg)"/><text x="223.9" y="331" text-anchor="end" fill="#ff5c72" font-size="13" font-weight="600" font-family="-apple-system,sans-serif">-$2.18</text>
+      </svg>
+    </div>
+    <div class="note">SPY, QQQ, XLV, XLF, IWM · Mar 2024 &ndash; Aug 2026 · zero-collision-filtered (same-bar entry/exit pricing artifacts removed &mdash; a measurement fix, not parameter tuning). Total P&L +$1,295 across 1,569 priceable trades.</div>
+  </section>
+</main>
+
+<footer>
+  <div><b style="color:var(--text)">FVG Copilot</b> &mdash; built on the existing production FVG (Fair Value Gap / MSS + displacement) equity bot core, extended with an options overlay and a Scout &rarr; Risk Guardian &rarr; Executor &rarr; Position Monitor agent chain.</div>
+  <div class="stack-row">
+    <span class="stack-pill"><b>Alpaca Trading API</b> ✓</span>
+    <span class="stack-pill"><b>Alpaca CLI</b> ✓ (required tech)</span>
+    <span class="stack-pill"><b>Groq</b> openai/gpt-oss-120b</span>
+    <span class="stack-pill"><b>Python</b> deterministic core</span>
+    <span class="stack-pill"><b>Vercel</b> serverless live data</span>
+  </div>
+  <div class="btn-row">
+    <a class="btn primary" href="https://github.com/blackhistoryig/FVG-Trading/tree/hackathon/fvg-copilot" target="_blank">GitHub Repo</a>
+    <a class="btn ghost" href="https://lablab.ai/ai-hackathons/alpaca-ai-trading-agents-hackathon" target="_blank">Hackathon Page</a>
+  </div>
+  <div class="stamp" style="margin-top:14px">Paper trading only. Dedicated &ldquo;lablab hackathon&rdquo; paper account, reset to $100k starting balance per contest rules, options level 3.</div>
+</footer>
+
+<script>
+var FILL_AT = Date.parse('2026-09-02T19:07:12Z');
+var HOLD_CAP = Date.parse('2026-09-03T19:07:12Z');
+var RING_C = 339.3;
+
+function usd(v){
+  var n = parseFloat(v);
+  if (isNaN(n)) return '\u2014';
+  return (n < 0 ? '-$' : '$') + Math.abs(n).toLocaleString('en-US',{minimumFractionDigits:2, maximumFractionDigits:2});
+}
+function pnl(v){
+  var n = parseFloat(v);
+  if (isNaN(n)) return '\u2014';
+  return (n < 0 ? '-$' : '+$') + Math.abs(n).toLocaleString('en-US',{minimumFractionDigits:2, maximumFractionDigits:2});
+}
+function setText(id, t){ var el = document.getElementById(id); if (el) el.textContent = t; }
+
+function render(d){
+  var A = d.account || {};
+  setText('pv', usd(A.portfolio_value));
+  setText('hero-pv', usd(A.portfolio_value));
+  var dayEl = document.getElementById('daypl');
+  var dpl = parseFloat(A.unrealized_pl);
+  dayEl.textContent = pnl(A.unrealized_pl);
+  dayEl.className = 'value ' + (dpl < 0 ? 'neg' : 'pos');
+  setText('cash', usd(A.cash));
+
+  var opts = (d.positions || []).filter(function(p){ return p.asset_class === 'us_option'; });
+  var net = 0;
+  opts.forEach(function(p){ net += parseFloat(p.unrealized_pl || 0); });
+  var netEl = document.getElementById('netpl');
+  netEl.textContent = pnl(net);
+  netEl.className = 'value ' + (net < 0 ? 'neg' : 'pos');
+  setText('hero-netpl', pnl(net));
+
+  var st = document.getElementById('pos-status');
+  if (opts.length > 0){
+    st.textContent = 'OPEN \u2014 LIVE';
+    st.className = 'tag open';
+  } else {
+    st.textContent = 'NO OPEN OPTION POSITIONS';
+    st.className = 'tag approve';
+  }
+  setText('asof', 'Live \u00b7 updated ' + new Date(d.fetched_at).toLocaleTimeString());
+
+  var pb = document.getElementById('positions-body');
+  if ((d.positions || []).length > 0){
+    pb.innerHTML = d.positions.map(function(p){
+      var upl = parseFloat(p.unrealized_pl || 0);
+      return '<tr><td>' + p.symbol + '</td><td>' + (p.side || '') + '</td><td>' + p.qty + '</td><td>' +
+        usd(p.avg_entry_price) + '</td><td>' + usd(p.current_price) + '</td><td style="color:' +
+        (upl < 0 ? 'var(--red)' : 'var(--green)') + '">' + pnl(p.unrealized_pl) + '</td></tr>';
+    }).join('');
+  } else {
+    pb.innerHTML = '<tr><td colspan="6">No open positions \u2014 see Recent Orders above for the closing fills.</td></tr>';
+  }
+
+  var ob = document.getElementById('orders-body');
+  if ((d.orders || []).length > 0){
+    ob.innerHTML = d.orders.slice(0, 12).map(function(o){
+      var sym = o.symbol || (o.legs && o.legs.length ? o.legs.map(function(l){ return l.symbol; }).join(' / ') : '\u2014');
+      var t = o.submitted_at ? new Date(o.submitted_at).toLocaleString() : '\u2014';
+      var fill = o.filled_avg_price ? usd(o.filled_avg_price) : '\u2014';
+      return '<tr><td>' + t + '</td><td>' + sym + '</td><td>' + (o.side || '') + '</td><td>' +
+        (o.qty != null ? o.qty : '') + '</td><td>' + (o.status || '') + '</td><td>' + fill + '</td></tr>';
+    }).join('');
+  }
+}
+
+function tick(){
+  var now = Date.now();
+  var ms = HOLD_CAP - now;
+  var ring = document.getElementById('ring-arc');
+  var rt = document.getElementById('ring-time');
+  var note = document.getElementById('countdown');
+  var frac = ms / (HOLD_CAP - FILL_AT);
+  if (frac < 0) frac = 0;
+  if (frac > 1) frac = 1;
+  if (ring) ring.setAttribute('stroke-dasharray', (RING_C * frac).toFixed(1) + ' ' + RING_C);
+  if (ms > 0){
+    var h = Math.floor(ms / 3600000), m = Math.floor(ms / 60000) % 60, s = Math.floor(ms / 1000) % 60;
+    if (rt) rt.textContent = String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
+    if (note){ note.style.display = 'block'; note.textContent = 'Hold-time cap (12:07:12 PM PDT) expires in ' + String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0') + ' \u2014 then Position Monitor auto-closes.'; }
+  } else {
+    if (rt) rt.textContent = 'CAP HIT';
+    if (ring) ring.setAttribute('stroke', '#ff5c72');
+    if (note){ note.style.display = 'block'; note.textContent = 'Hold-time cap reached (12:07 PM PDT) \u2014 Position Monitor auto-close expected; watch Recent Orders above.'; }
+  }
+}
+
+async function loadStatus(){
+  try {
+    var r = await fetch('/api/status');
+    var d = await r.json();
+    if (!d.ok) throw new Error(d.error || 'unavailable');
+    render(d);
+    document.getElementById('live-error').style.display = 'none';
+    document.getElementById('live-badge').style.display = 'inline-flex';
+  } catch (e) {
+    var el = document.getElementById('live-error');
+    el.style.display = 'block';
+    el.textContent = 'Live data not connected \u2014 showing the last verified snapshot (Sep 3, ~7:08 AM PDT).';
+    document.getElementById('live-badge').style.display = 'none';
+  }
+}
+
+tick();
+setInterval(tick, 1000);
+loadStatus();
+setInterval(loadStatus, 60000);
+</script>
+</body>
+</html>
