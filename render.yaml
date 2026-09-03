@@ -1,0 +1,40 @@
+# Render blueprint — deploy with: Render dashboard -> New -> Blueprint ->
+# select this repo (branch hackathon/fvg-copilot).
+# One Background Worker = one process = one persistent disk = one enforcer.
+# IMPORTANT: set DRY_RUN to "false" only after the first --selftest passes.
+
+services:
+  - type: worker
+    name: fvg-copilot-runner
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: starter
+    branch: hackathon/fvg-copilot
+    disk:
+      name: agent-state
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: ALPACA_API_KEY
+        sync: false
+      - key: ALPACA_SECRET_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_MODEL
+        value: openai/gpt-oss-120b
+      - key: DRY_RUN
+        value: "true"
+      - key: STATE_DIR
+        value: /data
+      - key: SIGNAL_SOURCE
+        value: live_bot
+      - key: SYMBOLS
+        value: SPY,QQQ,XLV,XLF,IWM
+      - key: SCAN_INTERVAL_SEC
+        value: "300"
+      - key: ENFORCE_INTERVAL_SEC
+        value: "60"
+      - key: MAX_DAILY_TRADES
+        value: "4"
