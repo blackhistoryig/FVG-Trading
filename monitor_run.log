@@ -1,0 +1,21 @@
+nohup: ignoring input
+Starting Position Monitor polling loop (interval=300s)...
+[POSITION MONITOR] Checked 1 open position(s) at 2026-09-03T19:18:40.418348+00:00.
+[POSITION MONITOR] SPY-LIVE-FIRST-REAL: max hold time (24.0h) exceeded (24.2h elapsed). Closing.
+[POSITION MONITOR] Error closing SPY260916C00765000: {"code":40310000,"message":"account not eligible to trade uncovered option contracts"}
+[POSITION MONITOR] Checked 1 open position(s) at 2026-09-03T19:23:40.831311+00:00.
+[POSITION MONITOR] SPY-LIVE-FIRST-REAL: max hold time (24.0h) exceeded (24.3h elapsed). Closing.
+[POSITION MONITOR] Error closing SPY260916C00765000: {"code":40410000,"message":"position not found: SPY260916C00765000"}
+[POSITION MONITOR] Error closing SPY260916C00775000: {"code":40410000,"message":"position not found: SPY260916C00775000"}
+[POSITION MONITOR] Checked 1 open position(s) at 2026-09-03T19:28:41.156690+00:00.
+[POSITION MONITOR] SPY-LIVE-FIRST-REAL: max hold time (24.0h) exceeded (24.4h elapsed). Closing.
+[POSITION MONITOR] Error closing SPY260916C00765000: {"code":40410000,"message":"position not found: SPY260916C00765000"}
+[POSITION MONITOR] Error closing SPY260916C00775000: {"code":40410000,"message":"position not found: SPY260916C00775000"}
+[POSITION MONITOR] Checked 1 open position(s) at 2026-09-03T19:33:41.487411+00:00.
+[POSITION MONITOR] SPY-LIVE-FIRST-REAL: max hold time (24.0h) exceeded (24.4h elapsed). Closing.
+[POSITION MONITOR] Error closing SPY260916C00765000: {"code":40410000,"message":"position not found: SPY260916C00765000"}
+[POSITION MONITOR] Error closing SPY260916C00775000: {"code":40410000,"message":"position not found: SPY260916C00775000"}
+[POSITION MONITOR] Checked 1 open position(s) at 2026-09-03T19:38:41.809264+00:00.
+[POSITION MONITOR] SPY-LIVE-FIRST-REAL: max hold time (24.0h) exceeded (24.5h elapsed). Closing.
+[POSITION MONITOR] Error closing SPY260916C00765000: {"code":40410000,"message":"position not found: SPY260916C00765000"}
+[POSITION MONITOR] Error closing SPY260916C00775000: {"code":40410000,"message":"position not found: SPY260916C00775000"}
