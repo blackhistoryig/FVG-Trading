@@ -207,15 +207,20 @@ def run_once(client: Optional[Any] = None) -> None:
     client = client or _get_trading_client()
     now = datetime.now(timezone.utc)
 
-    for pos in _get_open_positions():
+    open_positions = _get_open_positions()
+    print(f"[POSITION MONITOR] Checked {len(open_positions)} open position(s) at {now.isoformat()}.")
+
+    for pos in open_positions:
         signal_id = pos["signal_id"]
+        elapsed_hours = (now - pos["submitted_at"]).total_seconds() / 3600.0
 
         if hold_time_exceeded(pos["submitted_at"], pos["final_max_hold_hours"], now=now):
             print(f"[POSITION MONITOR] {signal_id}: max hold time "
-                  f"({pos['final_max_hold_hours']}h) exceeded. Closing.")
+                  f"({pos['final_max_hold_hours']}h) exceeded ({elapsed_hours:.1f}h elapsed). Closing.")
             pnl = compute_spread_unrealized_pnl(client, pos["long_option_symbol"], pos["short_option_symbol"])
             if close_spread_position(client, pos["long_option_symbol"], pos["short_option_symbol"]):
                 _close_position_record(signal_id, "max_hold_time_exceeded", pnl)
+                print(f"[POSITION MONITOR] {signal_id}: closed. Final P&L: ${pnl if pnl is not None else 'unknown'}.")
             continue
 
         pnl = compute_spread_unrealized_pnl(client, pos["long_option_symbol"], pos["short_option_symbol"])
@@ -230,6 +235,11 @@ def run_once(client: Optional[Any] = None) -> None:
                   f"(unrealized ${pnl:.2f} vs cap -${pos['final_max_loss_usd']:.2f}). Closing.")
             if close_spread_position(client, pos["long_option_symbol"], pos["short_option_symbol"]):
                 _close_position_record(signal_id, "max_loss_exceeded", pnl)
+                print(f"[POSITION MONITOR] {signal_id}: closed. Final P&L: ${pnl:.2f}.")
+        else:
+            print(f"[POSITION MONITOR] {signal_id}: healthy "
+                  f"(unrealized ${pnl:.2f} vs cap -${pos['final_max_loss_usd']:.2f}, "
+                  f"{elapsed_hours:.1f}h of {pos['final_max_hold_hours']}h hold). No action.")
 
 
 def run_forever() -> None:
