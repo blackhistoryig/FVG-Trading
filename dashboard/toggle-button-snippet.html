@@ -1,0 +1,87 @@
+<!--
+  dashboard/toggle-button-snippet.html
+  Paste-in block for the FVG Copilot dashboard (dashboard/index.html).
+
+  WHERE: inside any existing glass panel near the top (next to the LIVE badge
+  or the countdown ring panel works well). Adjust the inline styles to match
+  the page's design language (aurora/glass). Everything is self-contained.
+
+  WHAT IT DOES:
+  - On load: GET /api/control -> shows current TRADING ON / TRADING OFF state
+  - On click: POST /api/control with the toggled state
+  - Green = watchlist "FVG-COPILOT-ENABLED" exists on the Alpaca paper
+    account = runner will take new trades (within one scan cycle, ~5 min)
+  - Red = watchlist deleted = runner pauses NEW entries; risk enforcement
+    (stop-loss, hold caps, reconcile) keeps running on the Render worker
+-->
+
+<div id="agent-control-panel" class="glass-panel"
+     style="display:flex; flex-direction:column; gap:8px; padding:18px; border-radius:16px;">
+  <div style="display:flex; align-items:center; justify-content:space-between; gap:14px;">
+    <div>
+      <div style="font-weight:700; letter-spacing:.08em; font-size:13px;">AGENT CONTROL</div>
+      <div id="killswitch-sub" style="font-size:11.5px; opacity:.65; margin-top:4px;">
+        Gates new entries only — risk enforcement always runs
+      </div>
+    </div>
+    <button id="killswitch-btn" onclick="toggleAgent()"
+            style="padding:10px 22px; border:1px solid rgba(255,255,255,.18); border-radius:999px;
+                   font-weight:700; letter-spacing:.06em; font-size:12.5px; cursor:pointer;
+                   background:rgba(148,163,184,.15); color:#e2e8f0; transition:all .25s;">
+      &hellip;
+    </button>
+  </div>
+</div>
+
+<script>
+  (function () {
+    const btn = document.getElementById("killswitch-btn");
+    const sub = document.getElementById("killswitch-sub");
+
+    async function agentState() {
+      const r = await fetch("/api/control");
+      if (!r.ok) throw new Error("control api " + r.status);
+      return r.json();
+    }
+
+    function render(s) {
+      btn.textContent = s.enabled ? "● TRADING ON" : "⏸ TRADING OFF";
+      btn.style.background = s.enabled ? "rgba(52,211,153,.18)" : "rgba(248,113,113,.18)";
+      btn.style.borderColor = s.enabled ? "rgba(52,211,153,.45)" : "rgba(248,113,113,.45)";
+      btn.style.color = s.enabled ? "#6ee7b7" : "#fca5a5";
+      sub.textContent = s.enabled
+        ? "Runner takes new trades (applies within one scan cycle, ~5 min)"
+        : "New entries paused — stop-loss / hold-cap enforcement still active";
+    }
+
+    async function refresh() {
+      try {
+        render(await agentState());
+      } catch (e) {
+        btn.textContent = "⚠ UNKNOWN";
+        btn.style.background = "rgba(148,163,184,.15)";
+      }
+    }
+
+    window.toggleAgent = async function () {
+      btn.disabled = true;
+      btn.textContent = "···";
+      try {
+        const s = await agentState();
+        const r = await fetch("/api/control", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ enabled: !s.enabled }),
+        });
+        if (!r.ok) throw new Error("control api " + r.status);
+        render(await r.json());
+      } catch (e) {
+        btn.textContent = "⚠ ERROR";
+      }
+      btn.disabled = false;
+    };
+
+    refresh();
+    setInterval(refresh, 60000);
+  })();
+</script>

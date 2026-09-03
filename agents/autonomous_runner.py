@@ -1,37 +1,32 @@
 #!/usr/bin/env python3
 """
-FVG Copilot — Autonomous Runner (v2, wired to the REAL pipeline.py)
-===================================================================
+FVG Copilot — Autonomous Runner (v3: adds dashboard kill switch)
+================================================================
+v3 changes vs v2:
+  - KILL SWITCH: scan passes are gated on the existence of an Alpaca watchlist
+    named KILLSWITCH_WATCHLIST (default "FVG-COPILOT-ENABLED") on the paper
+    account. The dashboard's on/off button (dashboard/api/control.js) creates
+    and deletes that watchlist. Watchlist present = trading ON; absent = OFF.
+    Fail-closed: any API error during the check counts as OFF.
+    The ENFORCER is never gated — risk enforcement (stop-loss, hold caps,
+    reconcile) always runs, so "off" can never mean "unmanaged".
+    Set REQUIRE_KILLSWITCH_ON=false to disable gating entirely (selftest
+    bypasses it automatically).
+    Latency: the scanner checks once per scan cycle (<= 5 min).
+Everything else identical to v2 (see v2 notes below).
+============================================================================
 Single long-running process for one Render Background Worker:
 
   [enforcer thread, ENFORCE_INTERVAL_SEC=60]
       Enforce Risk-Guardian caps (final_max_loss_usd / final_max_hold_hours)
-      on open option positions. Closes via Alpaca's position-close endpoint
-      (the path that worked Sep 3 — avoids the 40310000 rejection hit by the
-      monitor's order path). Reconciles against the live account every pass:
-      DB-OPEN-but-account-flat -> CLOSED; untracked live option position ->
-      adopted with default caps. A lost state file can never silently
-      un-manage a position again.
+      on open option positions. Closes via Alpaca's position-close endpoint.
+      Reconciles against the live account every pass.
 
   [scanner thread, SCAN_INTERVAL_SEC=300, market-hours gated via /v2/clock]
-      Poll agents/signal_adapter.py (wraps live_bot.py's validated FVG
-      detection) and run the REAL pipeline.run_pipeline() end to end:
-      Scout -> Risk Guardian -> Executor. Full reasoning chains saved to
+      Kill-switch check -> market-hours check -> poll agents/signal_adapter.py
+      (wraps live_bot.py's validated FVG detection) -> run the REAL
+      pipeline.run_pipeline() end to end. Reasoning chains saved to
       STATE_DIR/runs/*.json.
-
-v2 changes vs v1 (after diffing against the real agents/pipeline.py):
-  - calls pipeline.run_pipeline(raw_signal, account_context, dry_run) instead
-    of reimplementing the chain (run_executor actually takes BOTH scout and
-    guardian outputs — v1's call would have raised TypeError)
-  - result["risk_guardian"] is a model_dump dict, so caps are read with dict
-    access, not getattr (v1 would have silently used default caps)
-  - skips symbols that already have an open tracked option trade (mirrors
-    live_bot's tracked_open skip)
-  - selftest uses a live SPY price and the full confirmed raw_signal shape
-
-All Alpaca access via the Alpaca CLI (required-technology rule) except the
-	detection path, which uses live_bot.py's existing alpaca-py data client.
-Auth via env vars. Never write keys to disk.
 """
 import argparse
 import json
@@ -63,6 +58,8 @@ CFG = {
     "SIGNAL_SOURCE": os.environ.get("SIGNAL_SOURCE", "live_bot"),  # live_bot | simulated | off
     "ESTIMATED_TRADE_COST_USD": float(os.environ.get("ESTIMATED_TRADE_COST_USD", "500")),
     "CLI_TIMEOUT_SEC": int(os.environ.get("CLI_TIMEOUT_SEC", "30")),
+    "KILLSWITCH_WATCHLIST": os.environ.get("KILLSWITCH_WATCHLIST", "FVG-COPILOT-ENABLED"),
+    "REQUIRE_KILLSWITCH_ON": os.environ.get("REQUIRE_KILLSWITCH_ON", "true").lower() != "false",
 }
 
 OCC_RE = re.compile(r"^[A-Z]{1,6}\d{6}[CP]\d{8}$")
@@ -244,6 +241,23 @@ def enforce_pass():
 
 # ---------------------------------------------------------------- scanning
 
+def trading_enabled() -> bool:
+    """Dashboard kill switch: trading is ON while the watchlist named
+    KILLSWITCH_WATCHLIST exists on the account (toggled by the dashboard's
+    on/off button via dashboard/api/control.js). Fail-closed on API errors.
+    The enforcer is NOT gated — risk enforcement always runs."""
+    if not CFG["REQUIRE_KILLSWITCH_ON"]:
+        return True
+    try:
+        lists = api("GET", "/v2/watchlists")
+        if isinstance(lists, dict):
+            lists = lists.get("watchlists", [])
+        return any(w.get("name") == CFG["KILLSWITCH_WATCHLIST"] for w in lists)
+    except CliError as e:
+        LOG.error("kill-switch check failed (%s) — treating as OFF (fail-closed)", e)
+        return False
+
+
 def market_is_open() -> bool:
     try:
         clock = api("GET", "/v2/clock")
@@ -354,6 +368,10 @@ def find_order_id(executor_out: dict):
 
 
 def scan_pass():
+    if not trading_enabled():
+        LOG.info("KILL SWITCH OFF (watchlist %s absent) — scanning paused; enforcer still active",
+                 CFG["KILLSWITCH_WATCHLIST"])
+        return
     if not market_is_open():
         LOG.info("market closed — scan pass skipped")
         return
@@ -452,7 +470,8 @@ def main():
     if args.selftest:
         CFG["SIGNAL_SOURCE"] = "simulated"
         CFG["DRY_RUN"] = True
-        LOG.info("SELFTEST: dry-run forced ON, simulated signal source")
+        CFG["REQUIRE_KILLSWITCH_ON"] = False
+        LOG.info("SELFTEST: dry-run forced ON, simulated signal, kill switch bypassed")
         enforce_pass()
         scan_pass()
         LOG.info("SELFTEST complete — check %s and %s", state_path(), CFG["STATE_DIR"] / "runs")
@@ -463,9 +482,11 @@ def main():
         scan_pass()
         return
 
-    LOG.info("autonomous runner v2 starting: enforce=%ds scan=%ds symbols=%s dry_run=%s signal_source=%s",
+    LOG.info("autonomous runner v3 starting: enforce=%ds scan=%ds symbols=%s dry_run=%s "
+             "signal_source=%s killswitch_watchlist=%s (required=%s)",
              CFG["ENFORCE_INTERVAL_SEC"], CFG["SCAN_INTERVAL_SEC"], CFG["SYMBOLS"],
-             CFG["DRY_RUN"], CFG["SIGNAL_SOURCE"])
+             CFG["DRY_RUN"], CFG["SIGNAL_SOURCE"], CFG["KILLSWITCH_WATCHLIST"],
+             CFG["REQUIRE_KILLSWITCH_ON"])
     threads = [
         threading.Thread(target=enforcer_loop, name="enforcer", daemon=True),
         threading.Thread(target=scanner_loop, name="scanner", daemon=True),
