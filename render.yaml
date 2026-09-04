@@ -1,20 +1,26 @@
-# Render blueprint — deploy with: Render dashboard -> New -> Blueprint ->
-# select this repo (branch hackathon/fvg-copilot).
-# One Background Worker = one process = one persistent disk = one enforcer.
-# IMPORTANT: set DRY_RUN to "false" only after the first --selftest passes.
+# Render blueprint — FREE PLAN version.
+# Background Workers need a paid plan, so the runner deploys as a WEB service
+# with a health endpoint (same pattern as the production equity bots in
+# live_bot.py). A free external pinger (UptimeRobot, 5-min interval) prevents
+# Render's 15-min spin-down, giving a 24/7 runner at $0.
+#
+# Deploy: Render dashboard -> New -> Blueprint -> this repo (branch
+# hackathon/fvg-copilot). Then set up UptimeRobot on the service URL.
+#
+# FREE-TIER CAVEAT: no persistent disk. State (agent_state.json, runs/) lives
+# in the container and is lost on restart — the runner's reconcile layer
+# rebuilds from the live Alpaca account every pass and adopts open positions
+# with default caps, so restarts degrade gracefully, never dangerously.
 
 services:
-  - type: worker
+  - type: web
     name: fvg-copilot-runner
     runtime: docker
     dockerfilePath: ./Dockerfile
     dockerContext: .
-    plan: starter
+    plan: free
     branch: hackathon/fvg-copilot
-    disk:
-      name: agent-state
-      mountPath: /data
-      sizeGB: 1
+    healthCheckPath: /
     envVars:
       - key: ALPACA_API_KEY
         sync: false
@@ -26,8 +32,6 @@ services:
         value: openai/gpt-oss-120b
       - key: DRY_RUN
         value: "true"
-      - key: STATE_DIR
-        value: /data
       - key: SIGNAL_SOURCE
         value: live_bot
       - key: SYMBOLS

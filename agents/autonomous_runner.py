@@ -1,32 +1,22 @@
 #!/usr/bin/env python3
 """
-FVG Copilot — Autonomous Runner (v3: adds dashboard kill switch)
-================================================================
-v3 changes vs v2:
-  - KILL SWITCH: scan passes are gated on the existence of an Alpaca watchlist
-    named KILLSWITCH_WATCHLIST (default "FVG-COPILOT-ENABLED") on the paper
-    account. The dashboard's on/off button (dashboard/api/control.js) creates
-    and deletes that watchlist. Watchlist present = trading ON; absent = OFF.
-    Fail-closed: any API error during the check counts as OFF.
-    The ENFORCER is never gated — risk enforcement (stop-loss, hold caps,
-    reconcile) always runs, so "off" can never mean "unmanaged".
-    Set REQUIRE_KILLSWITCH_ON=false to disable gating entirely (selftest
-    bypasses it automatically).
-    Latency: the scanner checks once per scan cycle (<= 5 min).
-Everything else identical to v2 (see v2 notes below).
+FVG Copilot — Autonomous Runner (v4: free-tier Render web service)
+==================================================================
+v4 changes vs v3:
+  - HEALTH CHECK HTTP SERVER: Render's free tier supports always-running
+    WEB services (it's Background Workers that need a paid plan). The equity
+    bot (live_bot.py) already uses this exact pattern — HTTPServer bound to
+    PORT, which Render injects. An external free pinger (UptimeRobot /
+    cron-job.org, every 5 min) prevents the 15-min spin-down, giving a
+    24/7 runner on the free plan.
+  - STATE IS EPHEMERAL on free tier (no persistent disk): on restart the
+    runner boots with empty state. By design this is safe — the reconcile
+    layer rebuilds from the live Alpaca account every pass and adopts any
+    open option position with default caps (ADOPT_* trade records). No
+    position can ever be left unmanaged; worst case is a default cap
+    instead of the Risk Guardian's custom one.
+Everything else identical to v3 (kill switch, enforcer, scanner, reconcile).
 ============================================================================
-Single long-running process for one Render Background Worker:
-
-  [enforcer thread, ENFORCE_INTERVAL_SEC=60]
-      Enforce Risk-Guardian caps (final_max_loss_usd / final_max_hold_hours)
-      on open option positions. Closes via Alpaca's position-close endpoint.
-      Reconciles against the live account every pass.
-
-  [scanner thread, SCAN_INTERVAL_SEC=300, market-hours gated via /v2/clock]
-      Kill-switch check -> market-hours check -> poll agents/signal_adapter.py
-      (wraps live_bot.py's validated FVG detection) -> run the REAL
-      pipeline.run_pipeline() end to end. Reasoning chains saved to
-      STATE_DIR/runs/*.json.
 """
 import argparse
 import json
@@ -38,6 +28,7 @@ import sys
 import threading
 import time
 from datetime import datetime, timezone
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -60,11 +51,43 @@ CFG = {
     "CLI_TIMEOUT_SEC": int(os.environ.get("CLI_TIMEOUT_SEC", "30")),
     "KILLSWITCH_WATCHLIST": os.environ.get("KILLSWITCH_WATCHLIST", "FVG-COPILOT-ENABLED"),
     "REQUIRE_KILLSWITCH_ON": os.environ.get("REQUIRE_KILLSWITCH_ON", "true").lower() != "false",
+    "HEALTH_PORT": int(os.environ.get("PORT", "10000")),
 }
 
 OCC_RE = re.compile(r"^[A-Z]{1,6}\d{6}[CP]\d{8}$")
 _state_lock = threading.Lock()
 _stop = threading.Event()
+
+# ------------------------------------------------------------ health server
+
+class HealthHandler(BaseHTTPRequestHandler):
+    """Minimal 200 OK endpoint — keeps Render's free web service awake and
+    gives UptimeRobot something to ping. Same pattern as live_bot.py."""
+
+    def _respond(self):
+        body = b"OK"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        self._respond()
+
+    def do_HEAD(self):
+        self._respond()
+
+    def log_message(self, format, *args):
+        return
+
+
+def start_health_server():
+    server = HTTPServer(("0.0.0.0", CFG["HEALTH_PORT"]), HealthHandler)
+    LOG.info("health check server on port %d (Render keep-alive)", CFG["HEALTH_PORT"])
+    threading.Thread(target=server.serve_forever, name="health", daemon=True).start()
+
 
 # ---------------------------------------------------------------- Alpaca CLI
 
@@ -243,8 +266,7 @@ def enforce_pass():
 
 def trading_enabled() -> bool:
     """Dashboard kill switch: trading is ON while the watchlist named
-    KILLSWITCH_WATCHLIST exists on the account (toggled by the dashboard's
-    on/off button via dashboard/api/control.js). Fail-closed on API errors.
+    KILLSWITCH_WATCHLIST exists on the account. Fail-closed on API errors.
     The enforcer is NOT gated — risk enforcement always runs."""
     if not CFG["REQUIRE_KILLSWITCH_ON"]:
         return True
@@ -482,11 +504,12 @@ def main():
         scan_pass()
         return
 
-    LOG.info("autonomous runner v3 starting: enforce=%ds scan=%ds symbols=%s dry_run=%s "
-             "signal_source=%s killswitch_watchlist=%s (required=%s)",
+    LOG.info("autonomous runner v4 starting: enforce=%ds scan=%ds symbols=%s dry_run=%s "
+             "signal_source=%s killswitch_watchlist=%s (required=%s) health_port=%d",
              CFG["ENFORCE_INTERVAL_SEC"], CFG["SCAN_INTERVAL_SEC"], CFG["SYMBOLS"],
              CFG["DRY_RUN"], CFG["SIGNAL_SOURCE"], CFG["KILLSWITCH_WATCHLIST"],
-             CFG["REQUIRE_KILLSWITCH_ON"])
+             CFG["REQUIRE_KILLSWITCH_ON"], CFG["HEALTH_PORT"])
+    start_health_server()
     threads = [
         threading.Thread(target=enforcer_loop, name="enforcer", daemon=True),
         threading.Thread(target=scanner_loop, name="scanner", daemon=True),
