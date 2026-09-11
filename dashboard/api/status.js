@@ -10,16 +10,33 @@ export default async function handler(req, res) {
     "APCA-API-KEY-ID": keyId,
     "APCA-API-SECRET-KEY": secret,
   };
+  const RUNNER_ACTIVITY_URL =
+    process.env.RUNNER_ACTIVITY_URL || "https://fvg-copilot-runner.onrender.com/activity";
+
   try {
-    const [a, p, o] = await Promise.all([
+    const [a, p, o, act] = await Promise.all([
       fetch(base + "/v2/account", { headers }),
       fetch(base + "/v2/positions", { headers }),
       fetch(base + "/v2/orders?status=all&limit=20&direction=desc", { headers }),
+      // Best-effort: the Render runner's own /activity feed (no signal / VETO /
+      // kill-switch-off / order-submitted / stop-loss / hold-cap events). If the
+      // free-tier service is asleep or slow, this must never block the tiles.
+      fetch(RUNNER_ACTIVITY_URL, { signal: AbortSignal.timeout(4000) }).catch(() => null),
     ]);
     if (!a.ok) throw new Error("account_http_" + a.status);
     const account = await a.json();
     const positions = p.ok ? await p.json() : [];
     const orders = o.ok ? await o.json() : [];
+
+    let activity = { ok: false, events: [], error: "runner_unreachable" };
+    if (act && act.ok) {
+      try {
+        activity = await act.json();
+      } catch (e) {
+        activity = { ok: false, events: [], error: String(e) };
+      }
+    }
+
     return res.status(200).json({
       ok: true,
       fetched_at: new Date().toISOString(),
@@ -61,6 +78,16 @@ export default async function handler(req, res) {
           status: l.status,
         })),
       })),
+      // Runner activity feed: what the autonomous bot is ACTUALLY doing right
+      // now (no-signal scans, kill-switch state, VETOs, fills, stop-loss/hold-
+      // cap closes). Comes straight from the Render service's in-memory feed.
+      runner: {
+        reachable: !!(act && act.ok),
+        killswitch_watchlist: activity.killswitch_watchlist || null,
+        require_killswitch_on: activity.require_killswitch_on ?? null,
+        scan_interval_sec: activity.scan_interval_sec || null,
+        events: activity.events || [],
+      },
     });
   } catch (e) {
     return res
