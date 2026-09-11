@@ -135,39 +135,51 @@
   .btn:hover{transform:translateY(-2px)}
   .btn.primary{background:linear-gradient(92deg,#2ba868,#3ddc84);color:#08130c;box-shadow:0 6px 20px rgba(61,220,132,0.3)}
   .btn.ghost{background:var(--panel);border:1px solid var(--border);color:var(--text)}
+
+  .live-feed{max-height:360px;overflow-y:auto}
+  .feed-row{display:flex;gap:12px;padding:9px 4px;border-bottom:1px solid var(--border);font-size:0.82rem;align-items:baseline}
+  .feed-row:last-child{border-bottom:none}
+  .feed-ts{color:var(--muted);font-size:0.72rem;white-space:nowrap;font-variant-numeric:tabular-nums}
+  .feed-msg{flex:1}
+  .feed-kind{font-size:0.66rem;font-weight:800;letter-spacing:.04em;padding:2px 7px;border-radius:6px;white-space:nowrap;text-transform:uppercase}
+  .feed-kind.no_signal,.feed-kind.market_closed{background:rgba(139,147,167,0.15);color:var(--muted)}
+  .feed-kind.kill_switch_off,.feed-kind.kill_switch_check_failed,.feed-kind.clock_check_failed{background:rgba(255,181,71,0.15);color:var(--amber)}
+  .feed-kind.veto,.feed-kind.pipeline_error,.feed-kind.stop_loss{background:rgba(255,92,114,0.15);color:var(--red)}
+  .feed-kind.order_submitted,.feed-kind.decision{background:rgba(61,220,132,0.15);color:var(--green)}
+  .feed-kind.hold_cap,.feed-kind.adopted,.feed-kind.skipped_open,.feed-kind.daily_cap{background:rgba(91,140,255,0.15);color:var(--accent)}
 </style>
 </head>
 <body>
 <div class="aurora"></div>
 
 <div class="ticker"><div class="ticker-inner">
-<span class="item">SPY <b>765/775 CALL SPREAD</b> · LIVE NET <b>+$60</b></span>
+<span class="item">SPY <b>765/775 CALL SPREAD</b> &middot; CLOSED <b>+$172.83</b></span>
 <span class="item">2,786 SIGNALS SCANNED &rarr; <b>1,569 PRICEABLE TRADES</b></span>
-<span class="item">16/30 POSITIVE MONTHS · BEST MONTH <b>JUN 2026 +$1,937</b> · WORST <span class="neg">MAR 2026 -$991</span></span>
-<span class="item">BEST TRADE <b>+$2,048</b> (QQQ) · WORST <span class="neg">-$421</span></span>
-<span class="item">AVG WIN <b>$42.33</b> · AVG LOSS $38.97 · PAYOFF <b>1.09:1</b></span>
+<span class="item">16/30 POSITIVE MONTHS &middot; BEST MONTH <b>JUN 2026 +$1,937</b> &middot; WORST <span class="neg">MAR 2026 -$991</span></span>
+<span class="item">BEST TRADE <b>+$2,048</b> (QQQ) &middot; WORST <span class="neg">-$421</span></span>
+<span class="item">AVG WIN <b>$42.33</b> &middot; AVG LOSS $38.97 &middot; PAYOFF <b>1.09:1</b></span>
 <span class="item">STRONGEST SIGNAL: <b>QQQ PUTS +$7.84/TRADE</b> (n=214)</span>
-<span class="item">RISK GUARDIAN STOP <span class="warn">$580 / 24H</span></span>
-<span class="item">ALPACA PAPER · DEDICATED $100K ACCOUNT · OPTIONS LVL 3</span>
-<span class="item">SPY <b>765/775 CALL SPREAD</b> · LIVE NET <b>+$60</b></span>
+<span class="item">RISK GUARDIAN STOP <span class="warn">$580 / 24H</span> &middot; TRADE CLOSED AT CAP</span>
+<span class="item">ALPACA PAPER &middot; DEDICATED $100K ACCOUNT &middot; OPTIONS LVL 3</span>
+<span class="item">SPY <b>765/775 CALL SPREAD</b> &middot; CLOSED <b>+$172.83</b></span>
 <span class="item">2,786 SIGNALS SCANNED &rarr; <b>1,569 PRICEABLE TRADES</b></span>
-<span class="item">16/30 POSITIVE MONTHS · BEST MONTH <b>JUN 2026 +$1,937</b> · WORST <span class="neg">MAR 2026 -$991</span></span>
-<span class="item">BEST TRADE <b>+$2,048</b> (QQQ) · WORST <span class="neg">-$421</span></span>
-<span class="item">AVG WIN <b>$42.33</b> · AVG LOSS $38.97 · PAYOFF <b>1.09:1</b></span>
+<span class="item">16/30 POSITIVE MONTHS &middot; BEST MONTH <b>JUN 2026 +$1,937</b> &middot; WORST <span class="neg">MAR 2026 -$991</span></span>
+<span class="item">BEST TRADE <b>+$2,048</b> (QQQ) &middot; WORST <span class="neg">-$421</span></span>
+<span class="item">AVG WIN <b>$42.33</b> &middot; AVG LOSS $38.97 &middot; PAYOFF <b>1.09:1</b></span>
 <span class="item">STRONGEST SIGNAL: <b>QQQ PUTS +$7.84/TRADE</b> (n=214)</span>
-<span class="item">RISK GUARDIAN STOP <span class="warn">$580 / 24H</span></span>
-<span class="item">ALPACA PAPER · DEDICATED $100K ACCOUNT · OPTIONS LVL 3</span>
+<span class="item">RISK GUARDIAN STOP <span class="warn">$580 / 24H</span> &middot; TRADE CLOSED AT CAP</span>
+<span class="item">ALPACA PAPER &middot; DEDICATED $100K ACCOUNT &middot; OPTIONS LVL 3</span>
 </div></div>
 
 <div class="hero">
   <h1>FVG <span class="gt">Copilot</span> <span class="badge track">OPTIONS ALPHA AGENTS</span><span class="badge live">LIVE ON ALPACA PAPER</span><span class="live-badge" id="live-badge"><span class="live-dot"></span>LIVE DATA</span></h1>
-  <p class="tagline">A deterministic Fair Value Gap trading engine governed by AI agents &mdash; an LLM Scout builds the thesis, an LLM Risk Guardian with hard-coded limits can veto it, a deterministic Executor trades real options on Alpaca.</p>
+  <p class="tagline">A deterministic Fair Value Gap trading engine governed by AI agents. An LLM Scout builds the thesis, an LLM Risk Guardian vetoes it against hard-coded limits, and a deterministic Executor places the real options trade on Alpaca.</p>
   <div class="stat-strip">
     <div class="chip pos"><div class="cv">+$1,295</div><div class="cl">Backtest P&L</div></div>
     <div class="chip"><div class="cv">48.9%</div><div class="cl">Win Rate</div></div>
     <div class="chip"><div class="cv">1,569</div><div class="cl">Clean Trades</div></div>
     <div class="chip"><div class="cv">1.09:1</div><div class="cl">Payoff Ratio</div></div>
-    <div class="chip pos"><div class="cv" id="hero-netpl">+$60</div><div class="cl">Live Spread P&L</div></div>
+    <div class="chip pos"><div class="cv" id="hero-netpl">+$172.83</div><div class="cl">Live Trade &mdash; Closed</div></div>
     <div class="chip"><div class="cv" id="hero-pv">&mdash;</div><div class="cl">Account Value (Live)</div></div>
   </div>
 </div>
@@ -179,20 +191,20 @@
     <div class="live-panel">
       <div class="live-flex">
         <div class="ring-wrap">
-          <svg viewBox="0 0 140 140" class="ring" role="img" aria-label="hold-time countdown">
+          <svg viewBox="0 0 140 140" class="ring" role="img" aria-label="hold-time cap, already reached">
             <circle cx="70" cy="70" r="54" stroke="#232938" stroke-width="9" fill="none"/>
-            <circle id="ring-arc" cx="70" cy="70" r="54" stroke="#ffb547" stroke-width="9" fill="none" stroke-linecap="round" stroke-dasharray="339.3 339.3" transform="rotate(-90 70 70)"/>
-            <text id="ring-time" x="70" y="68" text-anchor="middle" fill="#e6e9f0" font-size="19" font-weight="700" font-family="-apple-system,sans-serif">--:--:--</text>
-            <text x="70" y="86" text-anchor="middle" fill="#8b93a7" font-size="8.5" font-family="-apple-system,sans-serif" letter-spacing="1">HOLD-TIME CAP</text>
+            <circle id="ring-arc" cx="70" cy="70" r="54" stroke="#3ddc84" stroke-width="9" fill="none" stroke-linecap="round" stroke-dasharray="339.3 339.3" transform="rotate(-90 70 70)"/>
+            <text id="ring-time" x="70" y="68" text-anchor="middle" fill="#e6e9f0" font-size="16" font-weight="700" font-family="-apple-system,sans-serif">CLOSED</text>
+            <text x="70" y="86" text-anchor="middle" fill="#8b93a7" font-size="8.5" font-family="-apple-system,sans-serif" letter-spacing="1">HOLD-TIME CAP HIT</text>
           </svg>
-          <div class="ring-note">Risk Guardian 24h hold cap &mdash; Position Monitor auto-closes at 12:07 PM PDT</div>
+          <div class="ring-note">Risk Guardian's 24h hold cap hit at 12:07 PM PDT on Sep 3. The position closed by 12:22 PM.</div>
         </div>
         <div style="flex:1;min-width:260px">
           <div class="cards">
             <div class="card"><div class="label">Portfolio Value</div><div class="value" id="pv">&mdash;</div></div>
             <div class="card"><div class="label">Unrealized P&L</div><div class="value" id="daypl">&mdash;</div></div>
             <div class="card"><div class="label">Cash</div><div class="value" id="cash">&mdash;</div></div>
-            <div class="card"><div class="label">Spread Net P&L</div><div class="value pos" id="netpl">+$60</div></div>
+            <div class="card"><div class="label">Trade Result</div><div class="value pos" id="netpl">+$172.83</div></div>
             <div class="card ks-card">
               <div class="label">Agent Control &mdash; Autonomous Runner</div>
               <div class="value" style="font-size:1.0rem;display:flex;align-items:center;gap:8px"><span class="ks-dot" id="ks-dot"></span><span id="ks-state" style="letter-spacing:.03em">CHECKING&hellip;</span></div>
@@ -204,44 +216,45 @@
           </div>
         </div>
       </div>
-      <div class="note countdown" id="countdown" style="display:none"></div>
       <div class="table-wrap" style="margin-top:14px">
         <table>
           <thead><tr><th>Symbol</th><th>Side</th><th>Qty</th><th>Avg Entry</th><th>Current</th><th>Unrealized P&L</th></tr></thead>
           <tbody id="positions-body">
-            <tr><td>SPY260916C00765000</td><td>long</td><td>1</td><td>$7.37</td><td>&mdash;</td><td style="color:var(--green)">+$158</td></tr>
-            <tr><td>SPY260916C00775000</td><td>short</td><td>-1</td><td>$2.56</td><td>&mdash;</td><td style="color:var(--red)">-$98</td></tr>
+            <tr><td colspan="6">No open positions. The spread closed on Sep 3 at 12:22 PM PDT for a realized +$172.83 &mdash; see Recent Orders below.</td></tr>
           </tbody>
         </table>
       </div>
-      <div class="note">Fallback values are the last verified snapshot (Sep 3, ~7:08 AM PDT via live Alpaca CLI check) &mdash; replaced by live data automatically. Page polls every 60 seconds.</div>
+      <div class="note">This account has no open positions right now. Values above are live from the Alpaca paper API, polled every 60 seconds; the trade card and log below show exactly what happened while it was open.</div>
     </div>
   </section>
 
   <section>
-    <h2>The Live Trade <span class="accent">&mdash; SPY debit call spread, placed by the agents</span></h2>
+    <h2>The Trade <span class="accent">&mdash; SPY debit call spread, placed and closed by the agents</span></h2>
     <div class="trade-box">
       <div class="cards" style="margin-bottom:4px">
         <div class="card"><div class="label">Net Debit Paid</div><div class="value">$481</div></div>
         <div class="card"><div class="label">Risk Guardian Stop</div><div class="value">$580 / 24h</div></div>
-        <div class="card"><div class="label">Max Profit</div><div class="value pos">$519</div></div>
-        <div class="card"><div class="label">Status</div><div class="value" style="font-size:1.1rem"><span class="tag open" id="pos-status">OPEN &mdash; MONITORED</span></div></div>
+        <div class="card"><div class="label">Realized P&L</div><div class="value pos">+$172.83</div></div>
+        <div class="card"><div class="label">Status</div><div class="value" style="font-size:1.1rem"><span class="tag approve" id="pos-status">CLOSED &mdash; SETTLED</span></div></div>
       </div>
-      <div class="stamp" id="asof" style="font-size:0.75rem;color:var(--muted)">Snapshot: Sep 3, ~7:08 AM PDT (live polling pending)</div>
+      <div class="stamp" id="asof" style="font-size:0.75rem;color:var(--muted)">Closed Sep 3, 2026 &middot; 12:22 PM PDT</div>
       <div class="trade-grid">
-        <div class="item"><div class="k">Order ID</div><div class="v">c49e917f-5ad5-404a-bdfe-5af3524dcb0a</div></div>
-        <div class="item"><div class="k">Long Leg</div><div class="v">SPY260916C00765000 @ $7.37</div></div>
-        <div class="item"><div class="k">Short Leg</div><div class="v">SPY260916C00775000 @ $2.56</div></div>
+        <div class="item"><div class="k">Entry Order</div><div class="v">c49e917f-5ad5-404a-bdfe-5af3524dcb0a</div></div>
+        <div class="item"><div class="k">Long Leg Entry &rarr; Exit</div><div class="v">SPY260916C00765000: $7.37 &rarr; $12.33</div></div>
+        <div class="item"><div class="k">Short Leg Entry &rarr; Exit</div><div class="v">SPY260916C00775000: $2.56 &rarr; $5.79</div></div>
         <div class="item"><div class="k">Spread Width</div><div class="v">$10 wide</div></div>
-        <div class="item"><div class="k">Reward:Risk</div><div class="v">~1.08:1</div></div>
-        <div class="item"><div class="k">Filled</div><div class="v">Sep 2, 2026 · 12:07:12 PM PDT</div></div>
+        <div class="item"><div class="k">Reward:Risk (at entry)</div><div class="v">~1.08:1</div></div>
+        <div class="item"><div class="k">Held</div><div class="v">Sep 2, 12:07 PM &rarr; Sep 3, 12:22 PM PDT (~24.3h)</div></div>
       </div>
+      <div class="note">Risk Guardian's 24-hour hold-time cap hit at 12:07 PM PDT on Sep 3. A Codespace outage delayed the automated close by about 15 minutes. Both legs closed by 12:22 PM for a realized <b style="color:var(--green)">+$172.83</b>. Full sequence in the Agent Decision Log below.</div>
     </div>
     <div style="margin-top:14px"></div>
     <div class="table-wrap">
       <table>
         <thead><tr><th>Submitted</th><th>Symbol</th><th>Side</th><th>Qty</th><th>Status</th><th>Filled Avg</th></tr></thead>
         <tbody id="orders-body">
+          <tr><td>Sep 3, 12:22 PM PDT</td><td>SPY260916C00765000</td><td>sell</td><td>1</td><td>filled</td><td>$12.33</td></tr>
+          <tr><td>Sep 3, 12:18 PM PDT</td><td>SPY260916C00775000</td><td>buy</td><td>1</td><td>filled</td><td>$5.79</td></tr>
           <tr><td>Sep 2, 12:07 PM PDT</td><td>SPY260916C00765000 / SPY260916C00775000</td><td>buy / sell</td><td>1</td><td>filled</td><td>$4.81 net</td></tr>
         </tbody>
       </table>
@@ -249,26 +262,35 @@
   </section>
 
   <section>
-    <h2>Agent Reasoning <span class="accent">&mdash; actual pipeline transcripts</span></h2>
+    <h2>Live Activity <span class="accent">&mdash; what the runner is doing right now, every ~5 min scan cycle</span></h2>
+    <div class="live-panel">
+      <div id="feed-status" class="note" style="margin-top:0">Connecting to the runner&hellip;</div>
+      <div class="live-feed" id="activity-feed"></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Agent Reasoning <span class="accent">&mdash; the trade that actually filled (Sep 2&ndash;3)</span></h2>
     <div class="terminal">
       <div class="tbar"><span class="tdot" style="background:#ff5c72"></span><span class="tdot" style="background:#ffb547"></span><span class="tdot" style="background:#3ddc84"></span>&nbsp;fvg-copilot &mdash; scout / risk_guardian / executor / position_monitor</div>
       <div><span class="mut">></span> <span class="cmd">scout --signal SPY-LIVE-FIRST-REAL</span><br>
       <span class="mut">thesis:</span> &ldquo;confirmed market structure shift and strong displacement suggests upward pressure toward the measured move target&rdquo;<br>
-      <span class="mut">confidence:</span> <span class="ok">0.78</span> <span class="mut">· structure:</span> debit_call_spread</div>
+      <span class="mut">confidence:</span> <span class="ok">0.78</span> <span class="mut">&middot; structure:</span> debit_call_spread</div>
       <div style="margin-top:10px"><span class="mut">></span> <span class="cmd">risk_guardian --review</span><br>
-      <span class="err">[VETO · Sep 1]</span> <span class="mut">&mdash;</span> daily P&L &minus;$50 + backtest tail stat &ldquo;8.5% of winning trades lose >$50&rdquo; &rarr; Scout&rsquo;s $300 loss ceiling rejected. <span class="mut">Executor: NO_ORDER, 0 wasted calls.</span><br>
-      <span class="ok">[APPROVE_MODIFIED · Sep 2]</span> <span class="mut">&mdash;</span> &ldquo;$480/contract&hellip; stop must cover the full debit plus tail risk&hellip; $580, 24h hold&rdquo; &rarr; <span class="ok">Executor: order placed, both legs filled in ~100ms.</span></div>
+      <span class="err">[VETO &middot; Sep 1]</span> <span class="mut">&mdash;</span> daily P&L &minus;$50 plus the backtest tail stat that 8.5% of winning trades still lose more than $50. Scout&rsquo;s $300 loss ceiling got rejected. <span class="mut">Executor: NO_ORDER, zero wasted calls.</span><br>
+      <span class="ok">[APPROVE_MODIFIED &middot; Sep 2]</span> <span class="mut">&mdash;</span> &ldquo;$480/contract&hellip; stop must cover the full debit plus tail risk&hellip; $580, 24h hold&rdquo;. <span class="ok">Executor placed the order, both legs filled in ~100ms.</span></div>
       <div style="margin-top:10px"><span class="mut">></span> <span class="cmd">position_monitor --watch</span><br>
-      <span class="mut">enforcing</span> max_loss=<span class="warn">$580</span> <span class="mut">·</span> max_hold=<span class="warn">24h</span> <span class="mut">· polling live Alpaca positions</span></div>
+      <span class="mut">enforced</span> max_loss=<span class="warn">$580</span> <span class="mut">&middot;</span> max_hold=<span class="warn">24h</span> <span class="mut">&middot; cap hit Sep 3, 12:07 PM PDT &rarr; both legs closed by 12:22 PM &rarr; </span><span class="ok">+$172.83 realized</span></div>
     </div>
     <div style="margin-top:14px"></div>
     <div class="table-wrap">
       <table>
         <thead><tr><th>Timestamp</th><th>Signal</th><th>Scout</th><th>Risk Guardian</th><th>Executor</th></tr></thead>
         <tbody>
-          <tr><td>Sep 1, ~9:44 PM PDT</td><td>Bullish SPY FVG, spot $762.15, target $777</td><td>debit_call_spread, confidence 0.78</td><td><span class="tag veto">VETO</span> $300 loss vs. -$50 daily P&L: unacceptable per backtest tail-risk stat</td><td>NO_ORDER (correct no-op)</td></tr>
-          <tr><td>Sep 2, ~12:01 PM PDT</td><td>Bullish SPY FVG, spot $765.18, target $773.18</td><td>debit_call_spread, confidence 0.78</td><td><span class="tag approve">APPROVE_MODIFIED</span> $580 cap set (cost-aware: spread costs $480/contract, stop must cover full debit + tail-risk buffer)</td><td>Order built: long 765C / short 775C, 1 contract, dry_run=true</td></tr>
-          <tr><td>Sep 2, 12:07:12 PM PDT</td><td>Same signal, live submission</td><td>&mdash;</td><td>Same as above (real run)</td><td><span class="tag approve">FILLED</span> Real Alpaca order c49e917f&hellip;, both legs filled simultaneously (~100ms)</td></tr>
+          <tr><td>Sep 1, ~9:44 PM PDT</td><td>Bullish SPY FVG, spot $762.15, target $777</td><td>debit_call_spread, confidence 0.78</td><td><span class="tag veto">VETO</span> $300 loss vs. -$50 daily P&L, per the backtest tail-risk stat</td><td>NO_ORDER (correct no-op)</td></tr>
+          <tr><td>Sep 2, ~12:01 PM PDT</td><td>Bullish SPY FVG, spot $765.18, target $773.18</td><td>debit_call_spread, confidence 0.78</td><td><span class="tag approve">APPROVE_MODIFIED</span> $580 cap set: the spread costs $480/contract, and the stop has to cover the full debit plus a tail-risk buffer</td><td>Order built: long 765C / short 775C, 1 contract, dry_run=true</td></tr>
+          <tr><td>Sep 2, 12:07:12 PM PDT</td><td>Same signal, live submission</td><td>&mdash;</td><td>Same as above, real run</td><td><span class="tag approve">FILLED</span> Real Alpaca order c49e917f&hellip;, both legs filled simultaneously (~100ms)</td></tr>
+          <tr><td>Sep 3, 12:07&ndash;12:22 PM PDT</td><td>24h hold-time cap reached</td><td>&mdash;</td><td>Cap enforced by Position Monitor (deterministic, no LLM)</td><td><span class="tag approve">CLOSED</span> Short leg bought back @ $5.79, long leg sold @ $12.33. Net +$172.83.</td></tr>
         </tbody>
       </table>
     </div>
@@ -279,23 +301,23 @@
     <div class="pipeline">
       <div class="stage"><div class="role">Deterministic core</div><h3>FVG Engine</h3><p>ATR-based gap filter, MSS + displacement confirmation. Fires the raw directional signal.</p></div>
       <div class="arrow">&#8594;</div>
-      <div class="stage llm"><div class="role">LLM Agent · Groq</div><h3>Scout</h3><p>Contextualizes the FVG signal into a structured thesis + confidence score (openai/gpt-oss-120b).</p></div>
+      <div class="stage llm"><div class="role">LLM Agent &middot; Groq</div><h3>Scout</h3><p>Contextualizes the FVG signal into a structured thesis and confidence score (openai/gpt-oss-120b).</p></div>
       <div class="arrow">&#8594;</div>
-      <div class="stage llm"><div class="role">LLM + Rules Agent</div><h3>Risk Guardian</h3><p>Hard limits in plain code first (fail-closed), then Groq reasoning. Sets the real stop-loss / hold-time cap, can veto outright.</p></div>
+      <div class="stage llm"><div class="role">LLM + Rules Agent</div><h3>Risk Guardian</h3><p>Hard limits in plain code first, fail-closed, then Groq reasoning. Sets the real stop-loss and hold-time cap, can veto outright.</p></div>
       <div class="arrow">&#8594;</div>
       <div class="stage"><div class="role">Deterministic script</div><h3>Executor</h3><p>Alpaca CLI. Target-aware debit-spread strike selection, multi-leg order placement. No LLM in this step.</p></div>
       <div class="arrow">&#8594;</div>
-      <div class="stage"><div class="role">Deterministic script</div><h3>Position Monitor</h3><p>Polls the open position against Risk Guardian's max-loss / max-hold-time and auto-closes when either trips.</p></div>
+      <div class="stage"><div class="role">Deterministic script</div><h3>Position Monitor</h3><p>Polls the open position against Risk Guardian's max-loss and max-hold-time, and closes it when either trips.</p></div>
     </div>
   </section>
 
   <section>
-    <h2>Built the Hard Way <span class="accent">&mdash; 11 real bugs found live, fixed, committed</span></h2>
+    <h2>Built the Hard Way <span class="accent">&mdash; real bugs found live, fixed, committed</span></h2>
     <div class="cards">
-      <div class="card"><div class="label">Silent Misroute Bug</div><div class="value" style="font-size:0.95rem">str(Enum) would have flipped every bullish signal into a put spread &mdash; caught by schema-diffing before the first live run</div></div>
-      <div class="card"><div class="label">Cost-Blind Veto Bug</div><div class="value" style="font-size:0.95rem">Risk Guardian set a $50 cap no real spread could satisfy &mdash; found only by running against real Groq, fixed in the prompt contract</div></div>
-      <div class="card"><div class="label">Zero-Collision Filter</div><div class="value" style="font-size:0.95rem">43.7% of backtest trades priced entry & exit off the same bar, faking $0 P&L &mdash; skepticism caught it, not luck</div></div>
-      <div class="card"><div class="label">Live Chain Quirks</div><div class="value" style="font-size:0.95rem">0DTE-only default pages, quotes above spot, strike-window exhaustion &mdash; every one hit live, fixed, and committed separately</div></div>
+      <div class="card"><div class="label">Silent Misroute Bug</div><div class="value" style="font-size:0.95rem">str(Enum) would have flipped every bullish signal into a put spread, silently. Caught by diffing the real schema before the first live run, not after.</div></div>
+      <div class="card"><div class="label">Cost-Blind Veto Bug</div><div class="value" style="font-size:0.95rem">Risk Guardian kept setting a $50 stop no real spread could satisfy. It only surfaced once we ran it against live Groq; the fix went straight into the prompt.</div></div>
+      <div class="card"><div class="label">Zero-Collision Filter</div><div class="value" style="font-size:0.95rem">43.7% of backtest trades priced entry and exit off the same bar, faking $0 P&L. We caught it by distrusting a win rate that looked too clean, not by luck.</div></div>
+      <div class="card"><div class="label">Enforcement State Loss</div><div class="value" style="font-size:0.95rem">A Codespace rebuild wiped the Position Monitor's gitignored database, so it silently reported zero open positions while the spread was live. Caught by cross-checking the account directly and restoring the record.</div></div>
     </div>
   </section>
 
@@ -303,7 +325,7 @@
     <h2>Backtest Evidence <span class="accent">&mdash; 2.5 years, real Alpaca options prices</span></h2>
     <div class="chart-panel">
       <div class="chart-title">Cumulative Backtest P&L &mdash; 1,569 clean trades</div>
-      <div class="chart-sub">Mar 2024 &ndash; Aug 2026 · SPY / QQQ / XLV / XLF / IWM. Not a smooth rocket: the strategy dug a -$1,957 hole through 2024, peaked at +$2,090, and survived a -$2,179 peak-to-trough drawdown before finishing +$1,295. We show the drawdowns because that&rsquo;s the honest curve.</div>
+      <div class="chart-sub">Mar 2024 &ndash; Aug 2026 &middot; SPY / QQQ / XLV / XLF / IWM. Not a smooth rocket. The strategy dug a -$1,957 hole through 2024, peaked at +$2,090, and survived a -$2,179 peak-to-trough drawdown before finishing +$1,295. We show the drawdowns because that's the honest curve.</div>
       <svg viewBox="0 0 900 300" role="img" aria-label="Cumulative backtest P&L equity curve" style="width:100%;height:auto;display:block">
 <defs>
   <clipPath id="clipUp"><rect x="0" y="0" width="900" height="140.0"/></clipPath>
@@ -335,7 +357,7 @@
           <text x="80" y="76" text-anchor="middle" fill="#e6e9f0" font-size="26" font-weight="700" font-family="-apple-system,sans-serif">48.9%</text>
           <text x="80" y="96" text-anchor="middle" fill="#8b93a7" font-size="11" font-family="-apple-system,sans-serif">WIN RATE</text>
         </svg>
-        <div><div class="dt">48.9% Win Rate</div><div class="dd">768 profitable / 801 losing trades across 1,569 clean trades. Avg win $42.33 vs avg loss $38.97 &mdash; a believable, unglamorous options profile, not an overfit curve.</div></div>
+        <div><div class="dt">48.9% Win Rate</div><div class="dd">768 profitable / 801 losing trades across 1,569 clean trades. Avg win $42.33, avg loss $38.97: close to a coin flip with a small edge, which is what a real, non-curve-fit options strategy looks like.</div></div>
       </div>
       <div class="donut-cell">
         <svg viewBox="0 0 160 160" role="img" aria-label="tail risk">
@@ -345,7 +367,7 @@
           <text x="80" y="76" text-anchor="middle" fill="#e6e9f0" font-size="26" font-weight="700" font-family="-apple-system,sans-serif">19.4%</text>
           <text x="80" y="96" text-anchor="middle" fill="#8b93a7" font-size="11" font-family="-apple-system,sans-serif">OF WINS LOSE >$20</text>
         </svg>
-        <div><div class="dt">Why the Risk Guardian Exists</div><div class="dd">19.4% of winning underlying signals still lost >$20 on the options leg (8.5% lost >$50). Directional accuracy is not trade quality &mdash; so the Risk Guardian sets independent loss / hold-time stops.</div></div>
+        <div><div class="dt">Why the Risk Guardian Exists</div><div class="dd">19.4% of winning underlying signals still lost more than $20 on the options leg (8.5% lost more than $50). Directional accuracy alone doesn't protect the trade, so the Risk Guardian sets its own loss and hold-time stops instead of trusting the FVG signal.</div></div>
       </div>
     </div>
     <div style="margin-top:14px"></div>
@@ -358,47 +380,47 @@
           <linearGradient id="gneg" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#ff5c72"/><stop offset="1" stop-color="#c73b50"/></linearGradient>
         </defs>
         <line x1="300" y1="0" x2="300" y2="344" stroke="#39415a" stroke-width="1"/>
-        <text x="140" y="25" text-anchor="end" fill="#c3c9d6" font-size="13" font-family="-apple-system,sans-serif">QQQ · SELL (puts)</text>
+        <text x="140" y="25" text-anchor="end" fill="#c3c9d6" font-size="13" font-family="-apple-system,sans-serif">QQQ &middot; SELL (puts)</text>
         <text x="140" y="36" text-anchor="end" fill="#5f6879" font-size="9" font-family="-apple-system,sans-serif">n=214</text>
         <rect x="300" y="11" width="245.0" height="18" rx="4" fill="url(#gpos)"/><text x="553.0" y="25" fill="#3ddc84" font-size="13" font-weight="600" font-family="-apple-system,sans-serif">+$7.84</text>
-        <text x="140" y="59" text-anchor="end" fill="#c3c9d6" font-size="13" font-family="-apple-system,sans-serif">IWM · SELL</text>
+        <text x="140" y="59" text-anchor="end" fill="#c3c9d6" font-size="13" font-family="-apple-system,sans-serif">IWM &middot; SELL</text>
         <text x="140" y="70" text-anchor="end" fill="#5f6879" font-size="9" font-family="-apple-system,sans-serif">n=192</text>
         <rect x="300" y="45" width="39.4" height="18" rx="4" fill="url(#gpos)"/><text x="347.4" y="59" fill="#3ddc84" font-size="13" font-weight="600" font-family="-apple-system,sans-serif">+$1.26</text>
-        <text x="140" y="93" text-anchor="end" fill="#c3c9d6" font-size="13" font-family="-apple-system,sans-serif">XLF · SELL</text>
+        <text x="140" y="93" text-anchor="end" fill="#c3c9d6" font-size="13" font-family="-apple-system,sans-serif">XLF &middot; SELL</text>
         <text x="140" y="104" text-anchor="end" fill="#5f6879" font-size="9" font-family="-apple-system,sans-serif">n=94</text>
         <rect x="300" y="79" width="36.6" height="18" rx="4" fill="url(#gpos)"/><text x="344.6" y="93" fill="#3ddc84" font-size="13" font-weight="600" font-family="-apple-system,sans-serif">+$1.17</text>
-        <text x="140" y="127" text-anchor="end" fill="#c3c9d6" font-size="13" font-family="-apple-system,sans-serif">XLF · BUY</text>
+        <text x="140" y="127" text-anchor="end" fill="#c3c9d6" font-size="13" font-family="-apple-system,sans-serif">XLF &middot; BUY</text>
         <text x="140" y="138" text-anchor="end" fill="#5f6879" font-size="9" font-family="-apple-system,sans-serif">n=127</text>
         <rect x="300" y="113" width="12.5" height="18" rx="4" fill="url(#gpos)"/><text x="320.5" y="127" fill="#3ddc84" font-size="13" font-weight="600" font-family="-apple-system,sans-serif">+$0.40</text>
-        <text x="140" y="161" text-anchor="end" fill="#c3c9d6" font-size="13" font-family="-apple-system,sans-serif">XLV · SELL</text>
+        <text x="140" y="161" text-anchor="end" fill="#c3c9d6" font-size="13" font-family="-apple-system,sans-serif">XLV &middot; SELL</text>
         <text x="140" y="172" text-anchor="end" fill="#5f6879" font-size="9" font-family="-apple-system,sans-serif">n=54</text>
         <rect x="300" y="147" width="8.1" height="18" rx="4" fill="url(#gpos)"/><text x="316.1" y="161" fill="#3ddc84" font-size="13" font-weight="600" font-family="-apple-system,sans-serif">+$0.26</text>
-        <text x="140" y="195" text-anchor="end" fill="#c3c9d6" font-size="13" font-family="-apple-system,sans-serif">XLV · BUY</text>
+        <text x="140" y="195" text-anchor="end" fill="#c3c9d6" font-size="13" font-family="-apple-system,sans-serif">XLV &middot; BUY</text>
         <text x="140" y="206" text-anchor="end" fill="#5f6879" font-size="9" font-family="-apple-system,sans-serif">n=77</text>
         <rect x="300" y="181" width="1.2" height="18" rx="4" fill="url(#gpos)"/><text x="309.2" y="195" fill="#3ddc84" font-size="13" font-weight="600" font-family="-apple-system,sans-serif">+$0.04</text>
-        <text x="140" y="229" text-anchor="end" fill="#c3c9d6" font-size="13" font-family="-apple-system,sans-serif">SPY · BUY</text>
+        <text x="140" y="229" text-anchor="end" fill="#c3c9d6" font-size="13" font-family="-apple-system,sans-serif">SPY &middot; BUY</text>
         <text x="140" y="240" text-anchor="end" fill="#5f6879" font-size="9" font-family="-apple-system,sans-serif">n=206</text>
         <rect x="295.0" y="215" width="5.0" height="18" rx="4" fill="url(#gneg)"/><text x="287.0" y="229" text-anchor="end" fill="#ff5c72" font-size="13" font-weight="600" font-family="-apple-system,sans-serif">-$0.16</text>
-        <text x="140" y="263" text-anchor="end" fill="#c3c9d6" font-size="13" font-family="-apple-system,sans-serif">SPY · SELL</text>
+        <text x="140" y="263" text-anchor="end" fill="#c3c9d6" font-size="13" font-family="-apple-system,sans-serif">SPY &middot; SELL</text>
         <text x="140" y="274" text-anchor="end" fill="#5f6879" font-size="9" font-family="-apple-system,sans-serif">n=222</text>
         <rect x="281.6" y="249" width="18.4" height="18" rx="4" fill="url(#gneg)"/><text x="273.6" y="263" text-anchor="end" fill="#ff5c72" font-size="13" font-weight="600" font-family="-apple-system,sans-serif">-$0.59</text>
-        <text x="140" y="297" text-anchor="end" fill="#c3c9d6" font-size="13" font-family="-apple-system,sans-serif">QQQ · BUY</text>
+        <text x="140" y="297" text-anchor="end" fill="#c3c9d6" font-size="13" font-family="-apple-system,sans-serif">QQQ &middot; BUY</text>
         <text x="140" y="308" text-anchor="end" fill="#5f6879" font-size="9" font-family="-apple-system,sans-serif">n=199</text>
         <rect x="262.5" y="283" width="37.5" height="18" rx="4" fill="url(#gneg)"/><text x="254.5" y="297" text-anchor="end" fill="#ff5c72" font-size="13" font-weight="600" font-family="-apple-system,sans-serif">-$1.20</text>
-        <text x="140" y="331" text-anchor="end" fill="#c3c9d6" font-size="13" font-family="-apple-system,sans-serif">IWM · BUY</text>
+        <text x="140" y="331" text-anchor="end" fill="#c3c9d6" font-size="13" font-family="-apple-system,sans-serif">IWM &middot; BUY</text>
         <text x="140" y="342" text-anchor="end" fill="#5f6879" font-size="9" font-family="-apple-system,sans-serif">n=184</text>
         <rect x="231.9" y="317" width="68.1" height="18" rx="4" fill="url(#gneg)"/><text x="223.9" y="331" text-anchor="end" fill="#ff5c72" font-size="13" font-weight="600" font-family="-apple-system,sans-serif">-$2.18</text>
       </svg>
     </div>
-    <div class="note">SPY, QQQ, XLV, XLF, IWM · Mar 2024 &ndash; Aug 2026 · zero-collision-filtered (same-bar entry/exit pricing artifacts removed &mdash; a measurement fix, not parameter tuning). Total P&L +$1,295 across 1,569 priceable trades.</div>
+    <div class="note">SPY, QQQ, XLV, XLF, IWM &middot; Mar 2024 &ndash; Aug 2026 &middot; zero-collision-filtered. Same-bar entry/exit pricing artifacts removed. That's a measurement fix, not a tuning change. Total P&amp;L +$1,295 across 1,569 priceable trades.</div>
   </section>
 </main>
 
 <footer>
-  <div><b style="color:var(--text)">FVG Copilot</b> &mdash; built on the existing production FVG (Fair Value Gap / MSS + displacement) equity bot core, extended with an options overlay and a Scout &rarr; Risk Guardian &rarr; Executor &rarr; Position Monitor agent chain.</div>
+  <div><b style="color:var(--text)">FVG Copilot</b> is built on the existing production FVG (Fair Value Gap / MSS + displacement) equity bot core, extended with an options overlay and a Scout &rarr; Risk Guardian &rarr; Executor &rarr; Position Monitor agent chain.</div>
   <div class="stack-row">
-    <span class="stack-pill"><b>Alpaca Trading API</b> ✓</span>
-    <span class="stack-pill"><b>Alpaca CLI</b> ✓ (required tech)</span>
+    <span class="stack-pill"><b>Alpaca Trading API</b> &#10003;</span>
+    <span class="stack-pill"><b>Alpaca CLI</b> &#10003; (required tech)</span>
     <span class="stack-pill"><b>Groq</b> openai/gpt-oss-120b</span>
     <span class="stack-pill"><b>Python</b> deterministic core</span>
     <span class="stack-pill"><b>Vercel</b> serverless live data</span>
@@ -411,9 +433,7 @@
 </footer>
 
 <script>
-var FILL_AT = Date.parse('2026-09-02T19:07:12Z');
-var HOLD_CAP = Date.parse('2026-09-03T19:07:12Z');
-var RING_C = 339.3;
+var REALIZED_PNL = 172.83;
 
 function usd(v){
   var n = parseFloat(v);
@@ -426,6 +446,33 @@ function pnl(v){
   return (n < 0 ? '-$' : '+$') + Math.abs(n).toLocaleString('en-US',{minimumFractionDigits:2, maximumFractionDigits:2});
 }
 function setText(id, t){ var el = document.getElementById(id); if (el) el.textContent = t; }
+function esc(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){
+  return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+}); }
+
+function renderActivity(runner){
+  var statusEl = document.getElementById('feed-status');
+  var feedEl = document.getElementById('activity-feed');
+  if (!runner || !runner.reachable) {
+    statusEl.style.display = 'block';
+    statusEl.textContent = 'Runner activity feed unreachable right now (Render free-tier service may be waking up) \u2014 tiles above still reflect live Alpaca account data.';
+    return;
+  }
+  var events = runner.events || [];
+  if (!events.length) {
+    statusEl.style.display = 'block';
+    statusEl.textContent = 'Connected \u2014 no events recorded yet this session.';
+    return;
+  }
+  statusEl.style.display = 'none';
+  feedEl.innerHTML = events.map(function(e){
+    var t = e.ts ? new Date(e.ts).toLocaleTimeString() : '\u2014';
+    var kind = (e.kind || 'event');
+    return '<div class="feed-row"><span class="feed-ts">' + esc(t) + '</span>' +
+      '<span class="feed-kind ' + esc(kind) + '">' + esc(kind.replace(/_/g,' ')) + '</span>' +
+      '<span class="feed-msg">' + esc(e.message || '') + '</span></div>';
+  }).join('');
+}
 
 function render(d){
   var A = d.account || {};
@@ -438,25 +485,32 @@ function render(d){
   setText('cash', usd(A.cash));
 
   var opts = (d.positions || []).filter(function(p){ return p.asset_class === 'us_option'; });
-  var net = 0;
-  opts.forEach(function(p){ net += parseFloat(p.unrealized_pl || 0); });
   var netEl = document.getElementById('netpl');
-  netEl.textContent = pnl(net);
-  netEl.className = 'value ' + (net < 0 ? 'neg' : 'pos');
-  setText('hero-netpl', pnl(net));
+  var hasOpen = opts.length > 0;
+  if (hasOpen) {
+    var net = 0;
+    opts.forEach(function(p){ net += parseFloat(p.unrealized_pl || 0); });
+    netEl.textContent = pnl(net);
+    netEl.className = 'value ' + (net < 0 ? 'neg' : 'pos');
+    setText('hero-netpl', pnl(net));
+  } else {
+    netEl.textContent = pnl(REALIZED_PNL) + ' (closed)';
+    netEl.className = 'value pos';
+    setText('hero-netpl', pnl(REALIZED_PNL));
+  }
 
   var st = document.getElementById('pos-status');
-  if (opts.length > 0){
-    st.textContent = 'OPEN \u2014 LIVE';
+  if (hasOpen){
+    st.textContent = 'OPEN \u2014 MONITORED';
     st.className = 'tag open';
   } else {
-    st.textContent = 'NO OPEN OPTION POSITIONS';
+    st.textContent = 'CLOSED \u2014 SETTLED';
     st.className = 'tag approve';
   }
-  setText('asof', 'Live \u00b7 updated ' + new Date(d.fetched_at).toLocaleTimeString());
+  setText('asof', 'Live \u00b7 checked ' + new Date(d.fetched_at).toLocaleTimeString());
 
   var pb = document.getElementById('positions-body');
-  if ((d.positions || []).length > 0){
+  if (hasOpen){
     pb.innerHTML = d.positions.map(function(p){
       var upl = parseFloat(p.unrealized_pl || 0);
       return '<tr><td>' + p.symbol + '</td><td>' + (p.side || '') + '</td><td>' + p.qty + '</td><td>' +
@@ -464,7 +518,7 @@ function render(d){
         (upl < 0 ? 'var(--red)' : 'var(--green)') + '">' + pnl(p.unrealized_pl) + '</td></tr>';
     }).join('');
   } else {
-    pb.innerHTML = '<tr><td colspan="6">No open positions \u2014 see Recent Orders above for the closing fills.</td></tr>';
+    pb.innerHTML = '<tr><td colspan="6">No open positions. The spread closed on Sep 3 at 12:22 PM PDT for a realized +$172.83 \u2014 see Recent Orders below.</td></tr>';
   }
 
   var ob = document.getElementById('orders-body');
@@ -477,43 +531,8 @@ function render(d){
         (o.qty != null ? o.qty : '') + '</td><td>' + (o.status || '') + '</td><td>' + fill + '</td></tr>';
     }).join('');
   }
-}
 
-function tick(){
-  var now = Date.now();
-  var ms = HOLD_CAP - now;
-  var ring = document.getElementById('ring-arc');
-  var rt = document.getElementById('ring-time');
-  var note = document.getElementById('countdown');
-  var frac = ms / (HOLD_CAP - FILL_AT);
-  if (frac < 0) frac = 0;
-  if (frac > 1) frac = 1;
-  if (ring) ring.setAttribute('stroke-dasharray', (RING_C * frac).toFixed(1) + ' ' + RING_C);
-  if (ms > 0){
-    var h = Math.floor(ms / 3600000), m = Math.floor(ms / 60000) % 60, s = Math.floor(ms / 1000) % 60;
-    if (rt) rt.textContent = String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
-    if (note){ note.style.display = 'block'; note.textContent = 'Hold-time cap (12:07:12 PM PDT) expires in ' + String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0') + ' \u2014 then Position Monitor auto-closes.'; }
-  } else {
-    if (rt) rt.textContent = 'CAP HIT';
-    if (ring) ring.setAttribute('stroke', '#ff5c72');
-    if (note){ note.style.display = 'block'; note.textContent = 'Hold-time cap reached (12:07 PM PDT) \u2014 Position Monitor auto-close expected; watch Recent Orders above.'; }
-  }
-}
-
-async function loadStatus(){
-  try {
-    var r = await fetch('/api/status');
-    var d = await r.json();
-    if (!d.ok) throw new Error(d.error || 'unavailable');
-    render(d);
-    document.getElementById('live-error').style.display = 'none';
-    document.getElementById('live-badge').style.display = 'inline-flex';
-  } catch (e) {
-    var el = document.getElementById('live-error');
-    el.style.display = 'block';
-    el.textContent = 'Live data not connected \u2014 showing the last verified snapshot (Sep 3, ~7:08 AM PDT).';
-    document.getElementById('live-badge').style.display = 'none';
-  }
+  renderActivity(d.runner);
 }
 
 /* --- Agent control (kill switch) --- */
@@ -571,8 +590,22 @@ async function toggleAgent(){
 ksRefresh();
 setInterval(ksRefresh, 60000);
 
-tick();
-setInterval(tick, 1000);
+async function loadStatus(){
+  try {
+    var r = await fetch('/api/status');
+    var d = await r.json();
+    if (!d.ok) throw new Error(d.error || 'unavailable');
+    render(d);
+    document.getElementById('live-error').style.display = 'none';
+    document.getElementById('live-badge').style.display = 'inline-flex';
+  } catch (e) {
+    var el = document.getElementById('live-error');
+    el.style.display = 'block';
+    el.textContent = 'Live data not connected \u2014 showing the last verified snapshot.';
+    document.getElementById('live-badge').style.display = 'none';
+  }
+}
+
 loadStatus();
 setInterval(loadStatus, 60000);
 </script>
