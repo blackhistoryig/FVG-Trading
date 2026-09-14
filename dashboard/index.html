@@ -246,7 +246,7 @@
         <div class="item"><div class="k">Reward:Risk (at entry)</div><div class="v">~1.08:1</div></div>
         <div class="item"><div class="k">Held</div><div class="v">Sep 2, 12:07 PM &rarr; Sep 3, 12:22 PM PDT (~24.3h)</div></div>
       </div>
-      <div class="note">Risk Guardian's 24-hour hold-time cap hit at 12:07 PM PDT on Sep 3. A Codespace outage delayed the automated close by about 15 minutes. Both legs closed by 12:22 PM for a realized <b style="color:var(--green)">+$172.83</b>. Full sequence in the Agent Decision Log below.</div>
+      <div class="note">Risk Guardian's 24-hour hold-time cap hit at 12:07 PM PDT on Sep 3. A Codespace outage delayed the automated close by about 15 minutes. Both legs closed by 12:22 PM for a realized <b style="color:var(--green)">+$172.83</b>. Full sequence in the Agent Reasoning log below.</div>
     </div>
     <div style="margin-top:14px"></div>
     <div class="table-wrap">
@@ -270,27 +270,17 @@
   </section>
 
   <section>
-    <h2>Agent Reasoning <span class="accent">&mdash; the trade that actually filled (Sep 2&ndash;3)</span></h2>
+    <h2>Agent Reasoning <span class="accent">&mdash; live pipeline transcripts, updated every scan cycle</span></h2>
     <div class="terminal">
       <div class="tbar"><span class="tdot" style="background:#ff5c72"></span><span class="tdot" style="background:#ffb547"></span><span class="tdot" style="background:#3ddc84"></span>&nbsp;fvg-copilot &mdash; scout / risk_guardian / executor / position_monitor</div>
-      <div><span class="mut">></span> <span class="cmd">scout --signal SPY-LIVE-FIRST-REAL</span><br>
-      <span class="mut">thesis:</span> &ldquo;confirmed market structure shift and strong displacement suggests upward pressure toward the measured move target&rdquo;<br>
-      <span class="mut">confidence:</span> <span class="ok">0.78</span> <span class="mut">&middot; structure:</span> debit_call_spread</div>
-      <div style="margin-top:10px"><span class="mut">></span> <span class="cmd">risk_guardian --review</span><br>
-      <span class="err">[VETO &middot; Sep 1]</span> <span class="mut">&mdash;</span> daily P&L &minus;$50 plus the backtest tail stat that 8.5% of winning trades still lose more than $50. Scout&rsquo;s $300 loss ceiling got rejected. <span class="mut">Executor: NO_ORDER, zero wasted calls.</span><br>
-      <span class="ok">[APPROVE_MODIFIED &middot; Sep 2]</span> <span class="mut">&mdash;</span> &ldquo;$480/contract&hellip; stop must cover the full debit plus tail risk&hellip; $580, 24h hold&rdquo;. <span class="ok">Executor placed the order, both legs filled in ~100ms.</span></div>
-      <div style="margin-top:10px"><span class="mut">></span> <span class="cmd">position_monitor --watch</span><br>
-      <span class="mut">enforced</span> max_loss=<span class="warn">$580</span> <span class="mut">&middot;</span> max_hold=<span class="warn">24h</span> <span class="mut">&middot; cap hit Sep 3, 12:07 PM PDT &rarr; both legs closed by 12:22 PM &rarr; </span><span class="ok">+$172.83 realized</span></div>
+      <div id="reasoning-terminal"><div><span class="mut">waiting for the next signal&hellip;</span></div></div>
     </div>
     <div style="margin-top:14px"></div>
     <div class="table-wrap">
       <table>
         <thead><tr><th>Timestamp</th><th>Signal</th><th>Scout</th><th>Risk Guardian</th><th>Executor</th></tr></thead>
-        <tbody>
-          <tr><td>Sep 1, ~9:44 PM PDT</td><td>Bullish SPY FVG, spot $762.15, target $777</td><td>debit_call_spread, confidence 0.78</td><td><span class="tag veto">VETO</span> $300 loss vs. -$50 daily P&L, per the backtest tail-risk stat</td><td>NO_ORDER (correct no-op)</td></tr>
-          <tr><td>Sep 2, ~12:01 PM PDT</td><td>Bullish SPY FVG, spot $765.18, target $773.18</td><td>debit_call_spread, confidence 0.78</td><td><span class="tag approve">APPROVE_MODIFIED</span> $580 cap set: the spread costs $480/contract, and the stop has to cover the full debit plus a tail-risk buffer</td><td>Order built: long 765C / short 775C, 1 contract, dry_run=true</td></tr>
-          <tr><td>Sep 2, 12:07:12 PM PDT</td><td>Same signal, live submission</td><td>&mdash;</td><td>Same as above, real run</td><td><span class="tag approve">FILLED</span> Real Alpaca order c49e917f&hellip;, both legs filled simultaneously (~100ms)</td></tr>
-          <tr><td>Sep 3, 12:07&ndash;12:22 PM PDT</td><td>24h hold-time cap reached</td><td>&mdash;</td><td>Cap enforced by Position Monitor (deterministic, no LLM)</td><td><span class="tag approve">CLOSED</span> Short leg bought back @ $5.79, long leg sold @ $12.33. Net +$172.83.</td></tr>
+        <tbody id="reasoning-body">
+          <tr><td colspan="5">No agent decisions yet this session &mdash; rows appear here live the moment Scout &rarr; Risk Guardian run.</td></tr>
         </tbody>
       </table>
     </div>
@@ -412,7 +402,7 @@
         <rect x="231.9" y="317" width="68.1" height="18" rx="4" fill="url(#gneg)"/><text x="223.9" y="331" text-anchor="end" fill="#ff5c72" font-size="13" font-weight="600" font-family="-apple-system,sans-serif">-$2.18</text>
       </svg>
     </div>
-    <div class="note">SPY, QQQ, XLV, XLF, IWM &middot; Mar 2024 &ndash; Aug 2026 &middot; zero-collision-filtered. Same-bar entry/exit pricing artifacts removed. That's a measurement fix, not a tuning change. Total P&amp;L +$1,295 across 1,569 priceable trades.</div>
+    <div class="note">SPY, QQQ, XLV, XLF, IWM &middot; Mar 2024 &ndash; Aug 2026 &middot; zero-collision-filtered. Same-bar entry/exit pricing artifacts removed. That's a measurement fix, not a tuning change. Total P&L +$1,295 across 1,569 priceable trades.</div>
   </section>
 </main>
 
@@ -447,7 +437,7 @@ function pnl(v){
 }
 function setText(id, t){ var el = document.getElementById(id); if (el) el.textContent = t; }
 function esc(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){
-  return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+  return {'&':'&','<':'<','>':'>','"':'"',"'":'&#39;'}[c];
 }); }
 
 function renderActivity(runner){
@@ -609,5 +599,6 @@ async function loadStatus(){
 loadStatus();
 setInterval(loadStatus, 60000);
 </script>
+<script src="/reasoning.js" defer></script>
 </body>
 </html>
