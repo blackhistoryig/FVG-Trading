@@ -3,6 +3,25 @@
 agents/signal_adapter.py — bridges live_bot.py's VALIDATED 15m FVG detection
 to the hackathon pipeline's raw_signal format.
 
+DUAL-ENGINE (v2): this adapter now emits signals from BOTH detection
+engines, labeled by source, and lets the AI agents + hard-coded risk
+filters downstream do the sorting:
+  - "momentum_confirmed": the main-branch engine — gap PLUS the
+    MSS/displacement momentum gate (compute_mss_and_displacement +
+    has_momentum_confirmation imported from live_bot.py).
+  - "raw_gap": the thesis-timeout-v2 (Variant B) engine — gap size alone,
+    no momentum gate, inlined here so the hackathon branch does not depend
+    on Variant B's live_bot.py.
+Per-gap precedence: if BOTH engines fire on the same gap, the signal is
+emitted once and labeled momentum_confirmed (same gap = same trade idea;
+the confirmed version strictly carries more information).
+Both labels flow into Scout's prompt (scout.py serializes the whole raw
+signal dict into the LLM message), so the LLM can weigh an unconfirmed
+gap more skeptically. Risk Guardian's hard limits apply to every signal
+regardless of source, and the runner's MAX_DAILY_TRADES still bounds real
+order flow — the kill switch (FVG-COPILOT-ENABLED watchlist) also still
+gates everything.
+
 Design rule honored: WRAP the deterministic core, never reimplement it.
 Everything that matters mathematically is imported from live_bot.py:
   - data_client + StockBarsRequest pattern (15m bars, 6h lookback, IEX feed)
@@ -11,15 +30,16 @@ Everything that matters mathematically is imported from live_bot.py:
     MSS direction within lookback)
   - the gap rules: MIN_GAP_SIZE=0.15, c1/c3 three-bar gap, gap_level as stop
   - RISK_REWARD_RATIO=2.0 measured-move target
-Only the ~30-line per-symbol gap block is replicated here (verbatim logic),
-plus signal normalization and its own dedup state.
+Only the ~30-line per-symbol gap block is replicated here (verbatim gap
+logic, now branch-labeled by momentum), plus signal normalization and its
+own dedup state.
 
 Importing live_bot is safe: module level only builds clients and DB tables;
 run_bot() (the thing that trades equities) only runs under __main__ and is
 never called from here. TradingClient is paper=True in live_bot.
 
 Dedup semantics mirror live_bot.is_duplicate_or_cooling_down exactly:
-  - same (symbol, direction, gap_level) never re-fires
+  - same (symbol, direction, gap_level) never re-fires (either source)
   - any signal on a symbol starts a 45-minute cooldown for that symbol
 State lives in STATE_DIR/fired_signals.json (persistent disk on Render), NOT
 in live_bot's SQLite — keeps equity-bot state untouched.
@@ -121,7 +141,8 @@ def _fetch_bars(symbols):
 
 def poll_signals(symbols) -> list:
     """Returns raw_signal dicts in the exact shape pipeline.run_pipeline
-    accepts (confirmed against agents/pipeline.py's __main__ test signal)."""
+    accepts (confirmed against agents/pipeline.py's __main__ test signal).
+    Every signal carries a "source" label: momentum_confirmed or raw_gap."""
     seen = _load_seen()
     out = []
 
@@ -153,9 +174,11 @@ def poll_signals(symbols) -> list:
             c3 = indexed_df.iloc[i]
 
             sig = None
+            source = None
+            momentum = False
             if c1["high"] < c3["low"]:
                 gap_size = c3["low"] - c1["high"]
-                if gap_size >= MIN_GAP_SIZE and has_momentum_confirmation(indexed_df, i, "BULLISH"):
+                if gap_size >= MIN_GAP_SIZE:
                     gap_level = round(c1["high"], 2)
                     if not _is_duplicate(seen, symbol, "BULLISH", gap_level):
                         entry = float(c3["close"])
@@ -163,11 +186,13 @@ def poll_signals(symbols) -> list:
                         risk_per_share = entry - stop_loss
                         if risk_per_share > 0:
                             take_profit = round(entry + risk_per_share * RISK_REWARD_RATIO, 2)
+                            momentum = has_momentum_confirmation(indexed_df, i, "BULLISH")
+                            source = "momentum_confirmed" if momentum else "raw_gap"
                             sig = ("BUY", "bullish", entry, stop_loss, take_profit, gap_level)
 
             elif c1["low"] > c3["high"]:
                 gap_size = c1["low"] - c3["high"]
-                if gap_size >= MIN_GAP_SIZE and has_momentum_confirmation(indexed_df, i, "BEARISH"):
+                if gap_size >= MIN_GAP_SIZE:
                     gap_level = round(c1["low"], 2)
                     if not _is_duplicate(seen, symbol, "BEARISH", gap_level):
                         entry = float(c3["close"])
@@ -175,6 +200,8 @@ def poll_signals(symbols) -> list:
                         risk_per_share = stop_loss - entry
                         if risk_per_share > 0:
                             take_profit = round(entry - risk_per_share * RISK_REWARD_RATIO, 2)
+                            momentum = has_momentum_confirmation(indexed_df, i, "BEARISH")
+                            source = "momentum_confirmed" if momentum else "raw_gap"
                             sig = ("SELL", "bearish", entry, stop_loss, take_profit, gap_level)
 
             if sig is None:
@@ -183,6 +210,8 @@ def poll_signals(symbols) -> list:
             direction, gap_type, entry, stop_loss, take_profit, gap_level = sig
             # Real displacement metric: displacement candle range in ATR units
             # (the same quantity has_momentum_confirmation tests against 1.0).
+            # Reported for BOTH sources — it is the AI's job to weigh it, not
+            # the entry gate's job to hide it.
             atr = float(c2["atr"]) if not pd.isna(c2["atr"]) else 0.0
             displacement = round(float(c2["candle_range"]) / atr, 2) if atr > 0 else 1.0
 
@@ -192,17 +221,19 @@ def poll_signals(symbols) -> list:
                 "symbol": symbol,
                 "direction": direction,
                 "underlying_price": entry,
+                "source": source,
                 "fvg_context": {
                     "gap_type": gap_type,
-                    "mss_confirmed": True,
+                    "mss_confirmed": momentum,
                     "displacement_strength": displacement,
                     "measured_move_target": take_profit,
                     "entry_bar_timestamp": _bar_ts(c3),
+                    "source": source,
                 },
                 "estimated_cost_usd": None,
             })
-            LOG.info("FVG signal: %s %s %s gap_level=%.2f target=%.2f displacement=%.2fx ATR",
-                     symbol, direction, gap_type, gap_level, take_profit, displacement)
+            LOG.info("FVG signal [%s]: %s %s %s gap_level=%.2f target=%.2f displacement=%.2fx ATR mss=%s",
+                     source, symbol, direction, gap_type, gap_level, take_profit, displacement, momentum)
 
         except Exception as e:
             LOG.error("FVG evaluation failed for %s: %s", symbol, e)

@@ -1,17 +1,28 @@
 #!/usr/bin/env python3
 """
-FVG Copilot — Autonomous Runner (v5: activity feed for the dashboard)
+FVG Copilot — Autonomous Runner (v6: live agent reasoning + dual-source signals)
 ===================================================================
+v6 changes vs v5:
+  - REASONING EVENTS: decision / veto / order_submitted / pipeline_error
+    activity events now carry the full agent reasoning chain — Scout's
+    thesis, confidence score, suggested strategy, direction and underlying
+    price, plus Risk Guardian's caps, rationale and veto reason, and the
+    signal's source label (momentum_confirmed vs raw_gap from the
+    dual-engine signal adapter). The dashboard's Agent Reasoning panel
+    renders these live.
+  - ACTIVITY BUFFER widened from 60 to 200 events (market-closed noise at
+    ~12/hr was evicting decision events within ~5 hours).
+
 v5 changes vs v4:
-  - ACTIVITY FEED: an in-memory ring buffer (last 60 events) records every
-    scan-pass outcome (no signal, kill-switch off, market closed, clock-check
+  - ACTIVITY FEED: an in-memory ring buffer records every scan-pass
+    outcome (no signal, kill-switch off, market closed, clock-check
     error, VETO, APPROVE, ORDER_SUBMITTED, pipeline error) and every enforcer
     action (stop-loss hit, hold-cap hit, adopted orphan position). Exposed as
     GET /activity JSON on the same health-check HTTP server used for Render
     keep-alive. dashboard/api/status.js fetches this server-to-server and
     merges it in, so the dashboard shows what the bot is ACTUALLY doing
     right now instead of only the last Alpaca fill. Ephemeral by design
-    (lost on restart) -- same trade-off already accepted for agent_state.json
+    (lost on restart) — same trade-off already accepted for agent_state.json
     on the free tier; this is a live window, not a permanent audit log
     (that remains STATE_DIR/runs/*.json).
 
@@ -92,7 +103,7 @@ OCC_RE = re.compile(r"^[A-Z]{1,6}\d{6}[CP]\d{8}$")
 _state_lock = threading.Lock()
 _stop = threading.Event()
 
-_activity = collections.deque(maxlen=60)
+_activity = collections.deque(maxlen=200)
 _activity_lock = threading.Lock()
 
 
@@ -115,7 +126,8 @@ def record_activity(kind: str, message: str, extra: dict = None):
 class HealthHandler(BaseHTTPRequestHandler):
     """Minimal 200 OK on "/" for Render/UptimeRobot keep-alive, plus a real
     GET /activity JSON feed (kill-switch state, scan outcomes, VETOs, fills,
-    errors) that dashboard/api/status.js merges into what the tiles show."""
+    errors, full agent reasoning) that dashboard/api/status.js merges into
+    what the tiles show."""
 
     def _respond(self, status=200, body=b"OK", content_type="text/plain"):
         self.send_response(status)
@@ -515,7 +527,7 @@ def scan_pass():
         except Exception as e:
             LOG.error("pipeline failed for %s: %s", sid, e)
             record_activity("pipeline_error", f"{sid}: pipeline raised {e}",
-                             {"signal_id": sid, "symbol": sym})
+                             {"signal_id": sid, "symbol": sym, "source": sig.get("source")})
             (runs_dir / f"{utcnow().strftime('%Y%m%dT%H%M%S')}_{sid}_ERROR.json").write_text(
                 json.dumps({"signal": sig, "error": str(e)}, indent=2, default=str))
             continue
@@ -525,6 +537,7 @@ def scan_pass():
 
         rg = result.get("risk_guardian") or {}
         ex = result.get("executor") or {}
+        sc = result.get("scout") or {}
         LOG.info("pipeline complete for %s: status=%s guardian_decision=%s executor_action=%s",
                  sid, result.get("final_status"),
                  rg.get("decision", "?"), ex.get("action", "?"))
@@ -532,10 +545,19 @@ def scan_pass():
         veto_reason = rg.get("veto_reason")
         record_activity(
             "veto" if "VETO" in str(decision).upper() else "decision",
-            f"{sid} ({sym}): guardian={decision} executor=" + str(ex.get("action", "?"))
+            f"{sid} ({sym})[{sig.get('source') or 'unknown_source'}]: guardian={decision} executor="
+            + str(ex.get("action", "?"))
             + (f" — {veto_reason}" if "VETO" in str(decision).upper() and veto_reason else ""),
-            {"signal_id": sid, "symbol": sym, "decision": decision, "executor_action": ex.get("action"),
-             "reason": veto_reason or ex.get("reason")},
+            {"signal_id": sid, "symbol": sym, "source": sig.get("source"),
+             "direction": sc.get("direction") or sig.get("direction"),
+             "underlying_price": sc.get("underlying_price") or sig.get("underlying_price"),
+             "thesis": sc.get("thesis"), "confidence": sc.get("confidence_score"),
+             "strategy": sc.get("suggested_strategy"),
+             "decision": decision, "veto_reason": veto_reason,
+             "risk_rationale": rg.get("risk_rationale"),
+             "max_loss_usd": rg.get("final_max_loss_usd"),
+             "max_hold_hours": rg.get("final_max_hold_hours"),
+             "executor_action": ex.get("action"), "executor_reason": ex.get("reason")},
         )
 
         if result.get("final_status") == "PROCESSED" and ex.get("action") == "ORDER_SUBMITTED":
@@ -554,7 +576,14 @@ def scan_pass():
             open_symbols.add(sym)
             LOG.info("ORDER SUBMITTED for %s — legs %s now under enforcement", sid, legs)
             record_activity("order_submitted", f"ORDER SUBMITTED for {sid}: legs {legs}",
-                             {"signal_id": sid, "symbol": sym, "legs": legs, "order_id": find_order_id(ex)})
+                             {"signal_id": sid, "symbol": sym, "legs": legs, "order_id": find_order_id(ex),
+                              "source": sig.get("source"),
+                              "direction": sc.get("direction") or sig.get("direction"),
+                              "underlying_price": sc.get("underlying_price") or sig.get("underlying_price"),
+                              "thesis": sc.get("thesis"), "confidence": sc.get("confidence_score"),
+                              "strategy": sc.get("suggested_strategy"), "decision": decision,
+                              "max_loss_usd": rg.get("final_max_loss_usd"),
+                              "max_hold_hours": rg.get("final_max_hold_hours")})
     save_state(state)
 
 
@@ -606,7 +635,7 @@ def main():
         scan_pass()
         return
 
-    LOG.info("autonomous runner v5 starting: enforce=%ds scan=%ds symbols=%s dry_run=%s "
+    LOG.info("autonomous runner v6 starting: enforce=%ds scan=%ds symbols=%s dry_run=%s "
              "signal_source=%s killswitch_watchlist=%s (required=%s) health_port=%d",
              CFG["ENFORCE_INTERVAL_SEC"], CFG["SCAN_INTERVAL_SEC"], CFG["SYMBOLS"],
              CFG["DRY_RUN"], CFG["SIGNAL_SOURCE"], CFG["KILLSWITCH_WATCHLIST"],
