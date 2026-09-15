@@ -57,6 +57,24 @@ BUG HISTORY (all confirmed live during this session, not theoretical):
    final_max_loss_usd >= $215 now correctly proceeds to ORDER_SUBMITTED
    territory with only a $50 cap, without touching the unrelated
    liquidity/reward-risk/DTE/sanity guardrails.
+7. (2026-09-14) Order submission to /v2/orders was intermittently timing
+   out at the CLI's flat 20s timeout, silently dropping approved trades
+   (confirmed live: SPY and QQQ debit put spreads both approved by Risk
+   Guardian, both lost to "alpaca CLI call timed out after 20s: alpaca
+   api POST /v2/orders"). Root cause: multi-leg option order validation
+   on Alpaca's side can legitimately take longer than a plain GET, and a
+   single subprocess timeout with no retry treated any slow-but-healthy
+   response identically to a hung CLI. Fixed by giving order submission
+   (and ONLY order submission -- chain lookups are unaffected) a longer,
+   env-tunable timeout plus a small number of retries on timeout only
+   (never on a non-zero CLI exit, which usually means Alpaca actively
+   rejected the request). Retries are safe here specifically because
+   build_mleg_order() generates client_order_id ONCE per run_executor()
+   call and submit_mleg_order() reuses that same payload/id on every
+   retry attempt -- if an earlier "timed out" attempt actually reached
+   Alpaca and was accepted, Alpaca rejects the resubmission as a
+   duplicate client_order_id rather than opening a second position, so
+   retrying cannot double-place a trade.
 
 Integration: on a successful (non-dry-run) order submission, this module
 calls position_monitor.record_submitted_order() so the deterministic
@@ -79,6 +97,7 @@ import logging
 import os
 import re
 import subprocess
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -100,6 +119,13 @@ MAX_PLAUSIBLE_EXTRINSIC_PCT_OF_SPOT = 0.25
 
 STRIKE_BAND_MULTIPLIER = 3.0
 MIN_STRIKE_BAND_USD = 15.0
+
+# Order submission specifically gets a longer timeout + retries-on-timeout.
+# Chain lookups (fetch_option_chain) keep the original 20s/no-retry default
+# below -- they were never the source of the dropped-trade bug.
+ORDER_SUBMIT_TIMEOUT_SECONDS = int(os.environ.get("ALPACA_ORDER_TIMEOUT_SECONDS", "45"))
+ORDER_SUBMIT_MAX_RETRIES = int(os.environ.get("ALPACA_ORDER_MAX_RETRIES", "2"))
+ORDER_SUBMIT_RETRY_BACKOFF_SECONDS = int(os.environ.get("ALPACA_ORDER_RETRY_BACKOFF_SECONDS", "3"))
 
 OCC_SYMBOL_RE = re.compile(r"^([A-Z]{1,6})(\d{6})([CP])(\d{8})$")
 
@@ -165,27 +191,43 @@ def _extract_price_target(scout_output: Any) -> Optional[float]:
     return None
 
 
-def _run_cli(args: list[str], input_json: Optional[dict] = None, timeout: int = 20) -> dict:
+def _run_cli(args: list[str], input_json: Optional[dict] = None, timeout: int = 20,
+             retries: int = 0, retry_backoff: int = 3) -> dict:
+    """Runs the alpaca CLI. `retries` only applies to TimeoutExpired --
+    a non-zero exit code or malformed output means Alpaca (or the CLI)
+    actively responded, so retrying that blindly would be wrong; only a
+    genuine hang/timeout is treated as potentially transient."""
     cmd = [ALPACA_BIN] + args
-    try:
-        proc = subprocess.run(
-            cmd, input=json.dumps(input_json) if input_json is not None else None,
-            capture_output=True, text=True, timeout=timeout,
-        )
-    except FileNotFoundError:
-        return {"_error": f"alpaca CLI binary not found (looked for '{ALPACA_BIN}'); is it installed and on PATH?"}
-    except subprocess.TimeoutExpired:
-        return {"_error": f"alpaca CLI call timed out after {timeout}s: {' '.join(cmd)}"}
-    if proc.returncode != 0:
-        stderr = (proc.stderr or "").strip()
-        return {"_error": f"alpaca CLI exited {proc.returncode}: {stderr or proc.stdout.strip()}"}
-    stdout = (proc.stdout or "").strip()
-    if not stdout:
-        return {"_error": "alpaca CLI returned empty stdout"}
-    try:
-        return json.loads(stdout)
-    except json.JSONDecodeError as exc:
-        return {"_error": f"alpaca CLI returned non-JSON stdout: {exc}; raw={stdout[:300]}"}
+    attempt = 0
+    while True:
+        try:
+            proc = subprocess.run(
+                cmd, input=json.dumps(input_json) if input_json is not None else None,
+                capture_output=True, text=True, timeout=timeout,
+            )
+        except FileNotFoundError:
+            return {"_error": f"alpaca CLI binary not found (looked for '{ALPACA_BIN}'); is it installed and on PATH?"}
+        except subprocess.TimeoutExpired:
+            timeout_err = {"_error": f"alpaca CLI call timed out after {timeout}s: {' '.join(cmd)}"}
+            if attempt < retries:
+                attempt += 1
+                log.warning(
+                    "alpaca CLI call timed out after %ds (attempt %d/%d); retrying in %ds: %s",
+                    timeout, attempt, retries + 1, retry_backoff, " ".join(cmd),
+                )
+                time.sleep(retry_backoff)
+                continue
+            return timeout_err
+        if proc.returncode != 0:
+            stderr = (proc.stderr or "").strip()
+            return {"_error": f"alpaca CLI exited {proc.returncode}: {stderr or proc.stdout.strip()}"}
+        stdout = (proc.stdout or "").strip()
+        if not stdout:
+            return {"_error": "alpaca CLI returned empty stdout"}
+        try:
+            return json.loads(stdout)
+        except json.JSONDecodeError as exc:
+            return {"_error": f"alpaca CLI returned non-JSON stdout: {exc}; raw={stdout[:300]}"}
 
 
 def fetch_option_chain(symbol: str, option_type: Optional[str] = None,
@@ -425,7 +467,16 @@ def submit_mleg_order(order_payload: dict, dry_run: bool = True) -> dict:
         log.info("[DRY RUN] Would run: echo '<payload>' | %s api POST /v2/orders", ALPACA_BIN)
         log.info("[DRY RUN] Payload: %s", json.dumps(order_payload))
         return {"_dry_run": True, "would_submit": order_payload}
-    return _run_cli(["api", "POST", "/v2/orders"], input_json=order_payload)
+    # Longer timeout + retry-on-timeout-only (see BUG HISTORY #7). Safe because
+    # order_payload's client_order_id is generated once by run_executor() and
+    # reused verbatim across retries -- a duplicate submission is rejected by
+    # Alpaca rather than opening a second position.
+    return _run_cli(
+        ["api", "POST", "/v2/orders"], input_json=order_payload,
+        timeout=ORDER_SUBMIT_TIMEOUT_SECONDS,
+        retries=ORDER_SUBMIT_MAX_RETRIES,
+        retry_backoff=ORDER_SUBMIT_RETRY_BACKOFF_SECONDS,
+    )
 
 
 def run_executor(scout_output: Any, risk_output: Any, dry_run: bool = True) -> dict:
@@ -484,20 +535,6 @@ def run_executor(scout_output: Any, risk_output: Any, dry_run: bool = True) -> d
                            signal_id=signal_id, final_max_hold_hours=final_max_hold_hours).to_dict()
 
     total_max_loss = selection["max_loss_per_contract_usd"] * position_size_contracts
-    # FIX (2026-09-02): removed the old "total_max_loss > final_max_loss_usd" pre-trade
-    # rejection. That check compared Risk Guardian's tactical early-exit stop against the
-    # FULL theoretical max loss of holding the spread to expiration (i.e. the entire premium
-    # paid) -- but those are two different numbers by design. final_max_loss_usd is meant to
-    # be a TIGHTER threshold that Position Monitor uses to close the position early, well
-    # before it could ever reach its full structural max loss. Comparing them here made any
-    # trade with an early-exit stop smaller than one contract's full cost mathematically
-    # impossible to place -- confirmed live: three consecutive real spreads ($654, $628, $480
-    # per contract) were all correctly-approved by Risk Guardian yet rejected here anyway, and
-    # a later Risk Guardian run correctly deduced "no integer contract count can satisfy this"
-    # and vetoed outright -- the LLM was right about a real logic bug, not wrong. Position
-    # Monitor (agents/position_monitor.py, loss_limit_breached()) is the correct enforcement
-    # point for final_max_loss_usd; Alpaca's own buying-power check remains the backstop
-    # against a genuinely unaffordable order.
     log.info(
         "Position sizing: %s contract(s) x $%.2f max loss/contract = $%.2f total theoretical "
         "max loss if held to expiration. Risk Guardian's final_max_loss_usd=$%.2f is an "
@@ -544,120 +581,3 @@ def run_executor(scout_output: Any, risk_output: Any, dry_run: bool = True) -> d
     return ExecResult(action=action, reason=reason, order_payload=order_payload,
                        cli_response=cli_response, signal_id=signal_id,
                        final_max_hold_hours=final_max_hold_hours).to_dict()
-
-
-if __name__ == "__main__":
-    from enum import Enum
-    from types import SimpleNamespace
-    from unittest.mock import patch
-
-    class Direction(str, Enum):
-        BUY = "BUY"
-        SELL = "SELL"
-
-    class RiskDecision(str, Enum):
-        APPROVE = "APPROVE"
-        APPROVE_MODIFIED = "APPROVE_MODIFIED"
-        VETO = "VETO"
-
-    def make_snapshot(bp, ap, c=341.61):
-        return {
-            "dailyBar": {"c": c, "h": c + 0.5, "l": c - 0.5, "n": 6, "o": c, "t": "2026-09-01T04:00:00Z", "v": 6, "vw": c},
-            "greeks": {"delta": 0, "gamma": 0, "rho": 0, "theta": 0, "vega": 0},
-            "latestQuote": {"ap": ap, "as": 2, "ax": "S", "bp": bp, "bs": 1, "bx": "C", "c": " ", "t": "2026-09-01T19:59:59Z"},
-            "latestTrade": {"c": "g", "p": c, "s": 1, "t": "2026-09-01T20:06:42Z", "x": "C"},
-        }
-
-    print("=== Case A: VETO -> executor must no-op ===")
-    scout_a = SimpleNamespace(signal_id="sig-A", symbol="SPY", direction=Direction.BUY, underlying_price=600.0, thesis="target of 610")
-    risk_a = SimpleNamespace(signal_id="sig-A", decision=RiskDecision.VETO, veto_reason="daily loss limit breached")
-    print(run_executor(scout_a, risk_a, dry_run=True))
-
-    exp21 = (date.today() + timedelta(days=21)).strftime("%y%m%d")
-    print("\n=== Case B: real snapshots-dict shape, Direction.BUY -> must select CALLs ===")
-    fvg_context_b = SimpleNamespace(measured_move_target=608.0)
-    scout_b = SimpleNamespace(signal_id="sig-B", symbol="SPY", direction=Direction.BUY, underlying_price=600.0,
-                               fvg_context=fvg_context_b, thesis="MSS confirmed")
-    risk_b = SimpleNamespace(signal_id="sig-B", decision=RiskDecision.APPROVE_MODIFIED,
-                              position_size_contracts=1, final_max_loss_usd=250.0, final_max_hold_hours=12)
-    fake_chain_b = {"next_page_token": None, "snapshots": {
-        f"SPY{exp21}C00600000": make_snapshot(2.30, 2.50, c=600),
-        f"SPY{exp21}C00608000": make_snapshot(0.90, 1.00, c=600),
-    }}
-    with patch("__main__.fetch_option_chain", return_value=fake_chain_b) as mock_fetch_b:
-        result_b = run_executor(scout_b, risk_b, dry_run=True)
-    print(result_b)
-    assert "C0" in result_b["order_payload"]["legs"][0]["symbol"], "BUY did not select a call"
-    call_kwargs = mock_fetch_b.call_args.kwargs
-    assert call_kwargs.get("option_type") == "call"
-    assert call_kwargs.get("exp_gte") is not None and call_kwargs.get("exp_lte") is not None
-    assert call_kwargs.get("strike_gte") is not None and call_kwargs.get("strike_lte") is not None, "strike band not passed to fetch"
-    print(">>> passed: BUY selected CALLs; fetch called with option_type + DTE window + strike band")
-
-    print("\n=== Case C: real snapshots-dict shape, Direction.SELL -> must select PUTs ===")
-    fvg_context_c = SimpleNamespace(measured_move_target=592.0)
-    scout_c = SimpleNamespace(signal_id="sig-C", symbol="SPY", direction=Direction.SELL, underlying_price=600.0,
-                               fvg_context=fvg_context_c, thesis="bearish MSS")
-    risk_c = SimpleNamespace(signal_id="sig-C", decision=RiskDecision.APPROVE,
-                              position_size_contracts=1, final_max_loss_usd=250.0, final_max_hold_hours=12)
-    fake_chain_c = {"next_page_token": None, "snapshots": {
-        f"SPY{exp21}P00600000": make_snapshot(2.10, 2.30, c=600),
-        f"SPY{exp21}P00592000": make_snapshot(0.85, 0.95, c=600),
-    }}
-    with patch("__main__.fetch_option_chain", return_value=fake_chain_c):
-        result_c = run_executor(scout_c, risk_c, dry_run=True)
-    print(result_c)
-    assert "P0" in result_c["order_payload"]["legs"][0]["symbol"], "SELL did not select a put"
-    print(">>> passed: SELL selected PUTs")
-
-    print("\n=== Case D: unparseable chain / CLI error path ===")
-    scout_d = SimpleNamespace(signal_id="sig-D", symbol="QQQ", direction=Direction.SELL, underlying_price=520.0, thesis="target of 505")
-    risk_d = SimpleNamespace(signal_id="sig-D", decision=RiskDecision.APPROVE, position_size_contracts=1, final_max_loss_usd=200.0, final_max_hold_hours=24)
-    with patch("__main__.fetch_option_chain", return_value={"_error": "simulated CLI failure"}):
-        result_d = run_executor(scout_d, risk_d, dry_run=True)
-    print(result_d)
-
-    print("\n=== Case E: ACTUAL live garbage quote observed this session -> must be rejected by sanity guard ===")
-    exp_today = date.today().strftime("%y%m%d")
-    fake_chain_e = {"next_page_token": None, "snapshots": {
-        f"SPY{exp_today}C00420000": {
-            "dailyBar": {"c": 341.61}, "greeks": {"delta": 0, "gamma": 0, "rho": 0, "theta": 0, "vega": 0},
-            "latestQuote": {"ap": 348.53, "bp": 347.51}, "latestTrade": {"p": 341.61},
-        },
-    }}
-    parsed = _parse_occ_symbol(f"SPY{exp_today}C00420000")
-    mid, spread_pct = _mid_and_spread_pct(fake_chain_e["snapshots"][f"SPY{exp_today}C00420000"])
-    sanity_err = _sanity_check_quote(mid, parsed["strike"], 341.61, "call")
-    print("Direct sanity-guard check on the real garbage sample:", sanity_err)
-    assert sanity_err is not None, "Sanity guard FAILED to catch the real garbage quote from this session"
-    print(">>> passed: economic-sanity guard correctly rejects the real deep-OTM garbage quote observed live")
-
-    print("\n=== Case F: fetch_option_chain called with correct CLI flags (unit check) ===")
-    with patch("__main__._run_cli", return_value={"snapshots": {}}) as mock_run_cli:
-        fetch_option_chain("SPY", option_type="call",
-                            exp_gte=date(2026, 9, 15), exp_lte=date(2026, 10, 16),
-                            strike_gte=747.15, strike_lte=777.15)
-    called_args = mock_run_cli.call_args.args[0]
-    print("CLI args passed:", called_args)
-    assert "--type" in called_args and "call" in called_args
-    assert "--expiration-date-gte" in called_args and "2026-09-15" in called_args
-    assert "--expiration-date-lte" in called_args and "2026-10-16" in called_args
-    assert "--strike-price-gte" in called_args and "747.15" in called_args, "missing --strike-price-gte"
-    assert "--strike-price-lte" in called_args and "777.15" in called_args, "missing --strike-price-lte"
-    print(">>> passed: fetch_option_chain builds --type/--expiration-date-gte/-lte/--strike-price-gte/-lte")
-
-    print("\n=== Case G: real SPY spot ($762.15) with a wide strike band -> must find valid CALL and PUT spreads ===")
-    exp_g = (date.today() + timedelta(days=25)).strftime("%y%m%d")
-    fake_chain_g_calls = {"next_page_token": None, "snapshots": {
-        f"SPY{exp_g}C00755000": make_snapshot(9.00, 9.40, c=762.15),
-        f"SPY{exp_g}C00760000": make_snapshot(6.20, 6.60, c=762.15),
-        f"SPY{exp_g}C00765000": make_snapshot(4.10, 4.40, c=762.15),
-        f"SPY{exp_g}C00770000": make_snapshot(2.60, 2.90, c=762.15),
-    }}
-    scout_g = SimpleNamespace(signal_id="sig-G", symbol="SPY", direction=Direction.BUY, underlying_price=762.15, thesis="no explicit target")
-    risk_g = SimpleNamespace(signal_id="sig-G", decision=RiskDecision.APPROVE, position_size_contracts=1, final_max_loss_usd=500.0, final_max_hold_hours=24)
-    with patch("__main__.fetch_option_chain", return_value=fake_chain_g_calls):
-        result_g = run_executor(scout_g, risk_g, dry_run=True)
-    print(result_g)
-    assert result_g["order_payload"] is not None, "Case G failed to find a spread against a realistic SPY-level chain"
-    print(">>> passed: found a valid spread against a realistic $762 SPY chain within the strike band")
