@@ -4,10 +4,56 @@
 // Loaded after index.html's inline script (defer); reuses its global esc()
 // helper and wraps window.render so every /api/status poll refreshes this
 // panel alongside the tiles.
+//
+// Fallback: if the runner has restarted (Render free tier has no persistent
+// disk), its in-memory decision/veto/order_submitted history is gone even
+// though the underlying trades are still open. Rather than getting stuck on
+// "waiting for the next signal" forever, this reconstructs a minimal,
+// honestly-labeled transcript straight from Alpaca's permanent order history
+// (same source used by the hold-time ring) so the panel stays continuous
+// across restarts instead of going blank.
 (function () {
   var escFn = (typeof window.esc === 'function') ? window.esc : function (s) { return String(s == null ? '' : s); };
 
-  function renderReasoning(runner) {
+  function renderFromOrderHistory(d) {
+    var termEl = document.getElementById('reasoning-terminal');
+    var tb = document.getElementById('reasoning-body');
+    if (!tb) return false;
+    var opts = ((d && d.positions) || []).filter(function (p) { return p.asset_class === 'us_option'; });
+    var orders = ((d && d.orders) || []).filter(function (o) { return o.legs && o.legs.length; });
+    if (!opts.length || !orders.length) return false;
+    var symSet = {};
+    opts.forEach(function (p) { symSet[p.symbol] = true; });
+    var used = {};
+    var rows = [];
+    orders.forEach(function (o) {
+      var legSyms = o.legs.map(function (l) { return l.symbol; });
+      var matched = legSyms.filter(function (s) { return symSet[s] && !used[s]; });
+      if (!matched.length) return;
+      matched.forEach(function (s) { used[s] = true; });
+      rows.push({ ts: o.submitted_at, legs: legSyms, id: o.id, fill: o.filled_avg_price });
+    });
+    if (!rows.length) return false;
+    rows.sort(function (a, b) { return new Date(b.ts) - new Date(a.ts); });
+    tb.innerHTML = rows.slice(0, 12).map(function (r) {
+      var t = r.ts ? new Date(r.ts).toLocaleString() : '—';
+      var sig = r.legs.join(' / ');
+      return '<tr><td>' + escFn(t) + '</td><td>' + escFn(sig) + '</td><td>reconstructed from order history \u2014 runner memory was reset</td><td><span class="tag open">OPEN</span></td><td>ORDER_SUBMITTED</td></tr>';
+    }).join('');
+    if (termEl) {
+      var head = '<div><span class="mut">No live decision transcript survived the runner\u2019s last restart. Showing raw order history instead:</span></div>';
+      termEl.innerHTML = head + rows.slice(0, 6).map(function (r) {
+        var t = r.ts ? new Date(r.ts).toLocaleTimeString() + ' ' : '';
+        var line1 = '<div style="margin-top:10px"><span class="mut">></span> <span class="cmd">' + escFn(t + r.legs.join(' / ')) + '</span><br>';
+        var line2 = '<span class="mut">order id:</span> ' + escFn(r.id) + ' <span class="mut">&middot; fill:</span> ' + escFn(r.fill != null ? r.fill : '\u2014') + '</div>';
+        return line1 + line2;
+      }).join('');
+    }
+    return true;
+  }
+
+  function renderReasoning(d) {
+    var runner = d && d.runner;
     var termEl = document.getElementById('reasoning-terminal');
     var tb = document.getElementById('reasoning-body');
     if (!tb) return;
@@ -16,6 +62,7 @@
       return e.kind === 'decision' || e.kind === 'veto' || e.kind === 'order_submitted';
     });
     if (!dec.length) {
+      if (renderFromOrderHistory(d)) return;
       tb.innerHTML = '<tr><td colspan="5">No agent decisions yet this session — rows appear here live the moment Scout → Risk Guardian run.</td></tr>';
       if (termEl) termEl.innerHTML = '<div><span class="mut">waiting for the next signal&hellip;</span></div>';
       return;
@@ -58,7 +105,7 @@
   if (typeof origRender === 'function') {
     window.render = function (d) {
       origRender(d);
-      renderReasoning(d && d.runner);
+      renderReasoning(d);
     };
   }
   if (typeof window.loadStatus === 'function') window.loadStatus();
