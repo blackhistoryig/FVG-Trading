@@ -1,5 +1,5 @@
 alpaca-py
 pandas
+numpy
 pytz
-groq
-pydantic
+psycopg[binary]
