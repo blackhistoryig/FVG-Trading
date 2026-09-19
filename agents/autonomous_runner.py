@@ -76,6 +76,9 @@ from datetime import datetime, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 
+import psycopg
+from psycopg.rows import dict_row
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(1, str(ROOT))
@@ -97,28 +100,96 @@ CFG = {
     "KILLSWITCH_WATCHLIST": os.environ.get("KILLSWITCH_WATCHLIST", "FVG-COPILOT-ENABLED"),
     "REQUIRE_KILLSWITCH_ON": os.environ.get("REQUIRE_KILLSWITCH_ON", "true").lower() != "false",
     "HEALTH_PORT": int(os.environ.get("PORT", "10000")),
+    "DATABASE_URL": os.environ.get("DATABASE_URL", ""),
+    "EVENT_RETENTION_HOURS": int(os.environ.get("EVENT_RETENTION_HOURS", "48")),
 }
 
 OCC_RE = re.compile(r"^[A-Z]{1,6}\d{6}[CP]\d{8}$")
 _state_lock = threading.Lock()
 _stop = threading.Event()
 
-_activity = collections.deque(maxlen=200)
+_activity = collections.deque(maxlen=1000)
 _activity_lock = threading.Lock()
+_db_lock = threading.Lock()
+_db_ready = False
+
+
+def db_connect():
+    if not CFG["DATABASE_URL"]:
+        raise RuntimeError("DATABASE_URL is required for durable recovery state")
+    return psycopg.connect(CFG["DATABASE_URL"], row_factory=dict_row)
+
+
+def init_database():
+    global _db_ready
+    with _db_lock:
+        if _db_ready:
+            return
+        with db_connect() as conn, conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS runner_state (
+                    state_key TEXT PRIMARY KEY,
+                    value JSONB NOT NULL,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS runner_events (
+                    id BIGSERIAL PRIMARY KEY,
+                    ts TIMESTAMPTZ NOT NULL,
+                    kind TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    extra JSONB
+                )
+            """)
+            cur.execute("CREATE INDEX IF NOT EXISTS runner_events_ts_idx ON runner_events (ts DESC)")
+        _db_ready = True
+        LOG.info("durable Postgres state initialized")
 
 
 def record_activity(kind: str, message: str, extra: dict = None):
-    """Append one event to the in-memory activity feed the dashboard reads
-    via GET /activity on this same health-check HTTP server. Ephemeral
-    (lost on restart) and best-effort -- never raises."""
+    """Record live activity in memory and durable Postgres; never raises."""
     entry = {"ts": utcnow().isoformat(), "kind": kind, "message": message}
     if extra:
         entry["extra"] = extra
     try:
         with _activity_lock:
             _activity.appendleft(entry)
-    except Exception:
-        pass
+        if _db_ready:
+            with db_connect() as conn, conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO runner_events (ts, kind, message, extra) VALUES (%s, %s, %s, %s)",
+                    (entry["ts"], kind, message, json.dumps(extra) if extra else None),
+                )
+                cur.execute(
+                    "DELETE FROM runner_events WHERE ts < NOW() - (%s * INTERVAL '1 hour')",
+                    (CFG["EVENT_RETENTION_HOURS"],),
+                )
+    except Exception as e:
+        LOG.warning("activity persistence failed: %s", e)
+
+
+def durable_events():
+    if not _db_ready:
+        with _activity_lock:
+            return list(_activity)
+    try:
+        with db_connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT ts, kind, message, extra FROM runner_events "
+                "WHERE ts >= NOW() - (%s * INTERVAL '1 hour') ORDER BY ts DESC LIMIT 2000",
+                (CFG["EVENT_RETENTION_HOURS"],),
+            )
+            rows = cur.fetchall()
+        return [
+            {"ts": r["ts"].isoformat(), "kind": r["kind"], "message": r["message"],
+             **({"extra": r["extra"]} if r["extra"] else {})}
+            for r in rows
+        ]
+    except Exception as e:
+        LOG.warning("durable event read failed: %s", e)
+        with _activity_lock:
+            return list(_activity)
 
 
 # ------------------------------------------------------------ health server
@@ -140,8 +211,7 @@ class HealthHandler(BaseHTTPRequestHandler):
 
     def _respond_activity(self):
         try:
-            with _activity_lock:
-                events = list(_activity)
+            events = durable_events()
             payload = json.dumps({
                 "ok": True,
                 "generated_at": utcnow().isoformat(),
@@ -208,26 +278,32 @@ def api(method, path, body=None):
 
 # ------------------------------------------------------------------- state
 
-def state_path() -> Path:
-    return CFG["STATE_DIR"] / "agent_state.json"
+def default_state() -> dict:
+    return {"trades": [], "daily": {"date": "", "count": 0}}
 
 
 def load_state() -> dict:
-    p = state_path()
-    if not p.exists():
-        return {"trades": [], "daily": {"date": "", "count": 0}}
+    if not _db_ready:
+        return default_state()
     try:
-        return json.loads(p.read_text())
-    except (json.JSONDecodeError, OSError):
-        LOG.warning("state file unreadable — starting from live-account reconcile")
-        return {"trades": [], "daily": {"date": "", "count": 0}}
+        with db_connect() as conn, conn.cursor() as cur:
+            cur.execute("SELECT value FROM runner_state WHERE state_key = 'runner_state'")
+            row = cur.fetchone()
+        return row["value"] if row and isinstance(row["value"], dict) else default_state()
+    except Exception as e:
+        LOG.error("durable state read failed: %s", e)
+        return default_state()
 
 
 def save_state(state: dict):
-    with _state_lock:
-        tmp = state_path().with_suffix(".tmp")
-        tmp.write_text(json.dumps(state, indent=2))
-        tmp.replace(state_path())
+    if not _db_ready:
+        raise RuntimeError("durable state unavailable; refusing ephemeral enforcement state")
+    with _state_lock, db_connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO runner_state (state_key, value, updated_at) VALUES ('runner_state', %s, NOW()) "
+            "ON CONFLICT (state_key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()",
+            (json.dumps(state),),
+        )
 
 
 def trades_open(state) -> list:
@@ -247,8 +323,10 @@ def utcnow() -> datetime:
 
 def hours_since(iso: str) -> float:
     try:
-        then = datetime.fromisoformat(iso)
-    except ValueError:
+        then = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+        if then.tzinfo is None:
+            then = then.replace(tzinfo=timezone.utc)
+    except (ValueError, AttributeError):
         return 0.0
     return (utcnow() - then).total_seconds() / 3600.0
 
@@ -267,88 +345,145 @@ def live_option_positions() -> dict:
     return out
 
 
-def close_position(sym: str, pos: dict) -> dict:
+def recent_multileg_orders() -> list:
+    """Read durable Alpaca order history to recover original spreads after restart."""
     try:
-        resp = api("DELETE", f"/v2/positions/{sym}")
-        LOG.info("closed %s via position-close endpoint: %s", sym, json.dumps(resp)[:200])
-        return {"closed": True, "method": "position_close", "response": resp}
+        orders = api("GET", "/v2/orders?status=all&nested=true&limit=500&direction=desc&after=2026-01-01T00:00:00Z")
+        if isinstance(orders, dict):
+            orders = orders.get("orders", [])
+        return [o for o in orders if isinstance(o, dict) and o.get("order_class") == "mleg" and o.get("legs")]
     except CliError as e:
-        LOG.warning("position-close failed for %s (%s) — falling back to order", sym, e)
-    side = "sell_to_close" if pos.get("side") == "long" else "buy_to_close"
-    qty = abs(int(float(pos.get("qty") or 1)))
-    order = {"symbol": sym, "qty": qty, "side": side, "type": "market", "time_in_force": "day"}
-    resp = api("POST", "/v2/orders", order)
-    LOG.info("closed %s via %s order: %s", sym, side, json.dumps(resp)[:200])
-    return {"closed": True, "method": "order_fallback", "response": resp}
+        LOG.error("cannot read order history for recovery: %s", e)
+        return []
+
+
+def recover_open_spreads(live: dict) -> list:
+    """Map live legs to their original mleg order; preserve original submitted_at."""
+    remaining = set(live)
+    recovered = []
+    for order in recent_multileg_orders():
+        legs = [str(x.get("symbol", "")).upper() for x in order.get("legs", [])]
+        matched = [s for s in legs if s in remaining]
+        if len(matched) < 2:
+            continue
+        for s in matched:
+            remaining.discard(s)
+        root = re.match(r"^([A-Z]{1,6})", matched[0])
+        symbol = root.group(1) if root else matched[0]
+        recovered.append({
+            "signal_id": f"RECOVERED-{order.get('id')}",
+            "symbol": symbol,
+            "opened_at": order.get("submitted_at") or utcnow().isoformat(),
+            "legs": matched,
+            "max_loss_usd": 600.0,
+            "max_hold_hours": CFG["DEFAULT_MAX_HOLD_HOURS"],
+            "order_id": order.get("id"),
+            "closed": False,
+            "close_pending": False,
+            "recovered": True,
+            "note": "recovered from original Alpaca mleg order history",
+        })
+    if remaining:
+        # Fail closed: unknown legs are immediately due, never granted a fresh timer.
+        recovered.append({
+            "signal_id": f"RECOVERY_REVIEW-{utcnow().strftime('%H%M%S')}",
+            "symbol": "/".join(sorted(remaining)),
+            "opened_at": "1970-01-01T00:00:00+00:00",
+            "legs": sorted(remaining),
+            "max_loss_usd": 600.0,
+            "max_hold_hours": 0.0,
+            "order_id": None,
+            "closed": False,
+            "close_pending": False,
+            "recovered": True,
+            "note": "unmatched legs require immediate close/review; no fresh timer granted",
+        })
+    return recovered
+
+
+def market_is_open() -> bool:
+    try:
+        clock = api("GET", "/v2/clock")
+        return bool(clock.get("is_open"))
+    except CliError as e:
+        LOG.warning("clock check failed: %s", e)
+        return False
+
+
+def close_spread(t: dict, live: dict) -> dict:
+    present = [s for s in t["legs"] if s in live]
+    if len(present) < 2:
+        raise CliError("spread close requires both legs still present")
+    legs = []
+    for sym in present:
+        pos = live[sym]
+        is_long = str(pos.get("side", "")).lower() == "long"
+        qty = str(abs(int(float(pos.get("qty") or 1))))
+        legs.append({
+            "symbol": sym,
+            "ratio_qty": qty,
+            "side": "sell" if is_long else "buy",
+            "position_intent": "sell_to_close" if is_long else "buy_to_close",
+        })
+    payload = {"order_class": "mleg", "qty": "1", "type": "market", "time_in_force": "day", "legs": legs}
+    resp = api("POST", "/v2/orders", payload)
+    return {"order_id": resp.get("id"), "response": resp}
 
 
 def enforce_pass():
     state = load_state()
     live = live_option_positions()
     live_syms = set(live)
-    tracked_syms = set()
+    tracked = trades_open(state)
+    tracked_syms = {s for t in tracked for s in t["legs"]}
     changed = False
 
-    for t in trades_open(state):
-        tracked_syms.update(t["legs"])
+    # Recover only when durable state is missing/out of sync, from original Alpaca order history.
+    orphan_syms = live_syms - tracked_syms
+    if orphan_syms:
+        recovered = recover_open_spreads({s: live[s] for s in orphan_syms})
+        state["trades"].extend(recovered)
+        tracked.extend(recovered)
+        changed = True
+        record_activity("recovered", "Recovered open option spread(s) from Alpaca order history", {"trades": recovered})
+        LOG.warning("recovered %d spread(s) from order history", len(recovered))
+
+    open_now = market_is_open()
+    for t in tracked:
         present = [s for s in t["legs"] if s in live_syms]
         if not present:
-            t["closed"] = True
-            t["closed_at"] = utcnow().isoformat()
-            t["close_reason"] = "reconcile: no live position found"
-            changed = True
-            LOG.info("reconciled %s -> CLOSED (not on account)", t["signal_id"])
+            if not t.get("closed"):
+                t["closed"] = True
+                t["closed_at"] = utcnow().isoformat()
+                t["close_reason"] = "reconcile: no live position found"
+                changed = True
             continue
         net_pl = sum(float(live[s].get("unrealized_pl") or 0.0) for s in present)
         elapsed = hours_since(t["opened_at"])
-        if net_pl <= -abs(float(t["max_loss_usd"])):
-            LOG.warning("STOP-LOSS HIT for %s: net %.2f <= -%.2f after %.1fh — closing",
-                        t["signal_id"], net_pl, t["max_loss_usd"], elapsed)
-            record_activity("stop_loss", f"STOP-LOSS HIT for {t['signal_id']}: net {net_pl:.2f} <= -{t['max_loss_usd']:.2f} — closing",
-                             {"signal_id": t["signal_id"], "legs": present, "net_pl": net_pl})
-            for s in present:
-                close_position(s, live[s])
-            t["closed"] = True
-            t["closed_at"] = utcnow().isoformat()
-            t["close_reason"] = f"max loss {t['max_loss_usd']} hit (net {net_pl:.2f})"
+        due_loss = net_pl <= -abs(float(t["max_loss_usd"]))
+        due_hold = elapsed >= float(t["max_hold_hours"])
+        if not (due_loss or due_hold):
+            LOG.info("checked %s: net %+.2f, %.1fh/%.1fh, legs %d/%d — healthy", t["signal_id"], net_pl, elapsed, t["max_hold_hours"], len(present), len(t["legs"]))
+            continue
+        reason = "stop_loss" if due_loss else "hold_cap"
+        if not t.get("due_reported"):
+            record_activity(reason, f"{reason.upper()} DUE for {t['signal_id']}: net {net_pl:.2f}, {elapsed:.1f}h/{t['max_hold_hours']:.1f}h", {"signal_id": t["signal_id"], "legs": present, "net_pl": net_pl})
+            t["due_reported"] = True
             changed = True
-        elif elapsed >= float(t["max_hold_hours"]):
-            LOG.warning("HOLD CAP HIT for %s: %.1fh >= %.1fh, net %.2f — closing",
-                        t["signal_id"], elapsed, t["max_hold_hours"], net_pl)
-            record_activity("hold_cap", f"HOLD-TIME CAP HIT for {t['signal_id']}: {elapsed:.1f}h >= {t['max_hold_hours']:.1f}h, net {net_pl:.2f} — closing",
-                             {"signal_id": t["signal_id"], "legs": present, "net_pl": net_pl})
-            for s in present:
-                close_position(s, live[s])
-            t["closed"] = True
-            t["closed_at"] = utcnow().isoformat()
-            t["close_reason"] = f"max hold {t['max_hold_hours']}h exceeded ({elapsed:.1f}h)"
+        if not open_now:
+            continue
+        if t.get("close_pending"):
+            continue
+        try:
+            close = close_spread(t, live)
+            t["close_pending"] = True
+            t["close_order_id"] = close.get("order_id")
+            t["close_submitted_at"] = utcnow().isoformat()
             changed = True
-        else:
-            LOG.info("checked %s: net %+.2f, %.1fh/%.1fh, legs %d/%d — healthy",
-                     t["signal_id"], net_pl, elapsed, t["max_hold_hours"],
-                     len(present), len(t["legs"]))
-
-    orphans = live_syms - tracked_syms
-    if orphans:
-        if CFG["ADOPT_UNKNOWN_POSITIONS"]:
-            state["trades"].append({
-                "signal_id": f"ADOPTED-{utcnow().strftime('%H%M%S')}",
-                "symbol": "/".join(sorted(orphans)),
-                "opened_at": utcnow().isoformat(),
-                "legs": sorted(orphans),
-                "max_loss_usd": 600.0,
-                "max_hold_hours": CFG["DEFAULT_MAX_HOLD_HOURS"],
-                "order_id": None,
-                "closed": False,
-                "note": "adopted from live account; caps are env defaults",
-            })
-            changed = True
-            LOG.warning("adopted untracked option positions with default caps: %s", sorted(orphans))
-            record_activity("adopted", f"Adopted untracked option position(s) with default caps: {sorted(orphans)}",
-                             {"symbols": sorted(orphans)})
-        else:
-            LOG.error("UNTRACKED option positions on account (not adopting): %s", sorted(orphans))
-
+            record_activity("close_submitted", f"Submitted multi-leg close for {t['signal_id']}", {"signal_id": t["signal_id"], "order_id": t.get("close_order_id"), "legs": present})
+        except Exception as e:
+            record_activity("close_error", f"Close submission failed for {t['signal_id']}: {e}", {"signal_id": t["signal_id"], "legs": present})
+            LOG.error("close failed for %s: %s", t["signal_id"], e)
     if changed:
         save_state(state)
 
@@ -435,9 +570,11 @@ def account_context(symbol: str, estimated_cost: float):
         s = str(p.get("symbol", "")).upper()
         if s == symbol or (s.startswith(symbol) and s[len(symbol):len(symbol) + 1].isdigit()):
             exposure += abs(float(p.get("market_value") or 0.0))
+    # Count defined-risk spreads, not individual option legs.
+    open_spread_count = len(trades_open(load_state()))
     return AccountRiskContext(
         current_daily_pnl_usd=round(daily_pnl, 2),
-        open_position_count=len(positions),
+        open_position_count=open_spread_count,
         current_symbol_exposure_usd=round(exposure, 2),
         proposed_trade_cost_usd=estimated_cost,
     )
@@ -619,6 +756,7 @@ def main():
         stream=sys.stdout,
     )
     CFG["STATE_DIR"].mkdir(parents=True, exist_ok=True)
+    init_database()
 
     if args.selftest:
         CFG["SIGNAL_SOURCE"] = "simulated"
@@ -635,7 +773,7 @@ def main():
         scan_pass()
         return
 
-    LOG.info("autonomous runner v6 starting: enforce=%ds scan=%ds symbols=%s dry_run=%s "
+    LOG.info("autonomous runner v7 starting: enforce=%ds scan=%ds symbols=%s dry_run=%s "
              "signal_source=%s killswitch_watchlist=%s (required=%s) health_port=%d",
              CFG["ENFORCE_INTERVAL_SEC"], CFG["SCAN_INTERVAL_SEC"], CFG["SYMBOLS"],
              CFG["DRY_RUN"], CFG["SIGNAL_SOURCE"], CFG["KILLSWITCH_WATCHLIST"],
