@@ -340,8 +340,9 @@ def has_momentum_confirmation(df: pd.DataFrame, i: int, direction: str, symbol: 
     atr = df.at[c2_idx, 'atr']
     vol_ma = df.at[c2_idx, 'vol_ma']
     if pd.isna(atr) or pd.isna(vol_ma) or atr == 0 or vol_ma == 0:
-        print(f"[MOMENTUM_REJECT] {symbol} dir={direction}: NaN/zero base stats -- "
-              f"atr={atr}, vol_ma={vol_ma} (insufficient warmup data in lookback window)")
+        print(f"[WARMUP] {symbol} dir={direction}: middle-candle indicators "
+              f"unavailable or zero -- atr={atr}, vol_ma={vol_ma}; "
+              f"signal evaluation skipped (check history and data quality).")
         return False
 
     candle_range = df.at[c2_idx, 'candle_range']
@@ -385,7 +386,7 @@ def check_for_fvg_batch(symbols: list):
     tracked_open = db_get_tracked_positions()
     try:
         end_time = datetime.now(EST)
-        start_time = end_time - timedelta(hours=6)
+        start_time = end_time - timedelta(days=7)
 
         request_params = StockBarsRequest(
             symbol_or_symbols=symbols,
@@ -414,7 +415,12 @@ def check_for_fvg_batch(symbols: list):
                 else:
                     symbol_df = df
 
-                if len(symbol_df) < max(4, ATR_PERIOD + 2):
+                required_bars = max(4, ATR_PERIOD + 2, VOL_PERIOD + 2)
+                if len(symbol_df) < required_bars:
+                    print(f"[WARMUP] {symbol}: fetched {len(symbol_df)} bars; "
+                          f"need at least {required_bars} for ATR({ATR_PERIOD}) "
+                          f"and volume MA({VOL_PERIOD}) on the middle candle. "
+                          f"Signal evaluation skipped.")
                     continue
 
                 completed_df = symbol_df.iloc[:-1]
